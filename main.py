@@ -693,14 +693,14 @@ class Game:
     def __init__(self):
         print('Starting Game')
         #get arguments and see if it is a raspberry pi
-        isPi = False
+        self.isPi = False
         
         #using argparse
         parser = argparse.ArgumentParser(description='Run the ant simulation')
         parser.add_argument('--pi', action='store_true', help='Run on a Raspberry Pi')
         args = parser.parse_args()
         if args.pi:
-            isPi = True
+            self.isPi = True
             print('Running on Raspberry Pi')
         
         # if len(sys.argv) > 1:
@@ -712,7 +712,7 @@ class Game:
         pygame.init()
         self.screenSize = (480, 1920)
                 
-        if isPi:
+        if self.isPi:
             print('Starting display on PI')
             pygame.display.init()
             pygame.display.list_modes()
@@ -733,13 +733,13 @@ class Game:
         self.clock = pygame.time.Clock()
         #open on second screen
         maxAnts = 200
-        if isPi:
+        if self.isPi:
             maxAnts = 80
         self.antColony = AntColony(self.screenSize, maxAnts)
         # self.antColony.LoadBestAnts()
         #first run update 20000 times
         lastPercent = 0
-        if isPi == False:
+        if self.isPi == False:
             for i in range(20000):
                 #print every 10 percent
                 percentN = int(i/20000 * 100)
@@ -761,7 +761,7 @@ class Game:
             self.screen.fill((25,25,25))
 
             self.antColony.update()
-            self.antColony.drawAnts(self.screen, isPi=isPi)
+            self.antColony.drawAnts(self.screen, isPi=self.isPi)
 
             keys = pygame.key.get_pressed()
 

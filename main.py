@@ -614,7 +614,7 @@ class AntColony:
         timeDelta = time.time() - self.LastSave
         timeDistance = 60 #save every minute
         if isPi:
-            timeDistance = 60*60 * hour #save every hour for the pi
+            timeDistance = 60*60 # hour #save every hour for the pi
 
         if timeDelta > timeDistance:
     

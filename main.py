@@ -257,7 +257,7 @@ class WorldGrid:
         return active
 
 class AntColony:
-    def __init__(self, _screenSize, _maxAnts=200):
+    def __init__(self, _screenSize, _maxAnts):
         self.maxAnts = _maxAnts
         self.ants = []
         #hive pos is 80percent in the corner right
@@ -735,7 +735,7 @@ class Game:
         maxAnts = 200
         if isPi:
             maxAnts = 80
-        self.antColony = AntColony(self.screenSize, maxAnts=maxAnts)
+        self.antColony = AntColony(self.screenSize, maxAnts)
         # self.antColony.LoadBestAnts()
         #first run update 20000 times
         lastPercent = 0

@@ -43,96 +43,135 @@ class Ant:
         self.x = 0
         self.y = 0
         self.energy = 100
-        self.life = 500
+        self.life = 100
         self.FoodConsumed = 0
         self.blockedFront = False
         self.ClossestFood = [0,0]
 
-        self.InputSources = [ self.getDirection,self.getPdirection, self.getEnergy, self.getLife , self.getBlockedFront, self.foodDir, self.foodFront, self.oscillate, self.randomNum, self.GetPherFront, self.closeToFood ]
+        self.InputSources = [ self.getDirection,self.getPdirection, self.getBlockedFront, self.foodDir, self.foodFront, self.oscillate, self.randomNum, self.GetPherFront, self.closeToFood ]
         self.OutputDestinations = [ self.move, self.turn, self.dropPherimone ]
 
         self.DropPherAmount = 0
         self.pherFront = 0
         
         self.posHistory = []
+        
+        self.DebugBrain = False
 
     def create_brain(self, size=6):
+        """Create_Brain : create a random brain"""
         for i in range(size):
            src = random.random() > 0.5
-           selector = random.randint(0, max(len(self.InputSources), len(self.neurons)))
+           selectorSrc = random.randint(0, max(len(self.InputSources), len(self.neurons)))
+           selectorDst = random.randint(0, max(len(self.OutputDestinations), len(self.neurons)))
            frc = random.random() * 2 - 1
            dest = random.random() > 0.5
-           self.brain.append((src, selector, frc, dest))
+           self.brain.append((src, selectorSrc, selectorDst, frc, dest))
            
     def closeToFood(self):
-        """ returns true if the ant is close to food """
+        """closeToFood() : returns true if the ant is close to food"""
         #if closest food is found, return true
+        
+        isClose = 0
+        
         if self.ClossestFood != [-1,-1]:
-            return 1
-        return 0
+            isClose = 1
+        else:
+            isClose = 0
+        if self.DebugBrain:
+            print(f'isClose: {isClose}')
+        return isClose
 
     def RunBrain(self):
+        """RunBrain() : run the brain of the ant"""
         for i in range(len(self.brain)):
-            src = self.brain[i][0]  # true or false if the source is an input
-            selector = self.brain[i][1]  # the selector value
-            frc = self.brain[i][2]  # the force value
-            dest = self.brain[i][3]  # true or false if the destination is an output
+            synapseN = self.brain[i]
+            if self.DebugBrain:
+                print(f'Synapse: {synapseN}')
+            src = synapseN[0]  # true or false if the source is an input
+            selectorSrc = synapseN[1]  # the selector value
+            selectorDst = synapseN[2]  # the selector value
+            frc = synapseN[3]  # the force value
+            dest = 0
+            dest = synapseN[4]  # true or false if the destination is an output
+     
+            if self.DebugBrain:
+                print(f'Brain: {i}  src: {"Input" if src else "Neuron Input"}  selectorSrc: {selectorSrc}  selectorDst: {selectorDst}  frc: {frc}  dest: {"Output" if dest else "Neuron Output"}')
             
             if src:
                 # get the value from the input source
-                idx = selector % len(self.InputSources)
+                idx = selectorSrc % len(self.InputSources)
                 val = self.InputSources[idx]()
+                if self.DebugBrain:
+                    print(f'Input: {self.InputSources[idx].__doc__} value: {val}')
             else:
-                idx = selector % len(self.neurons)
+                idx = selectorSrc % len(self.neurons)
                 val = self.neurons[idx]
+                if self.DebugBrain:
+                    print(f'Neuron Input: {idx}  value: {val}')
 
-            if dest:
+            
+            if self.DebugBrain:
+                print(f'val*frc: {val * frc}')
+
+
+            if dest: # if the destination is an output
                 # set the value to the output destination
-                idx = selector % len(self.OutputDestinations)
-                self.OutputDestinations[idx](val * frc)
-            else:
+                outIdx = selectorDst % len(self.OutputDestinations)
+                self.OutputDestinations[outIdx](val * frc)
+                if self.DebugBrain:
+                    print(f'Output: {self.OutputDestinations[outIdx].__doc__} value: {val * frc}')
+            else: # if the destination is a neuron
                 # set the value to the neuron
-                idx = selector % len(self.neurons)
-                self.neurons[idx] = val * frc
+                outIdx = selectorDst % len(self.neurons)
+                self.neurons[outIdx] += (val * frc)
+                if self.DebugBrain:
+                    print(f'Neuron Output Set to: {outIdx}  value: {self.neurons[outIdx]}')
+            if self.DebugBrain:
+                print('____')
+        if self.DebugBrain:
+            print('-------------------------')
+
 
     def randomNum(self):
+        """randomNum() : returns a random number between -1 and 1"""
         return random.random() * 2 - 1
     
 
     def oscillate(self):
-        """ returns a value between -1 and 1 that oscillates """
+        """oscillate() : returns a value between -1 and 1"""
         return math.sin(self.life/10)
     
     def getDirection(self):
-        """ returns the direction of the ant """
-        return self.direction
+        """getDirection() : returns the direction of the ant in -1 to 1 """
+        return self.direction / (2*math.pi)
 
     def getPdirection(self):
-        """ returns the previous direction of the ant """
-        return self.pDirection
+        """getPdirection() : returns the previous direction of the ant in -1 to 1 """
+        return self.pDirection / (2*math.pi)
     
     def getEnergy(self):
-        """ returns the energy of the ant """
+        """getEnergy() : returns the energy of the ant """
         return self.energy
     
     def getLife(self):
-        """ returns the life of the ant """
+        """getLife() : returns the life of the ant """
         return self.life
 
     def getBlockedFront(self):
-        """ returns true if there is a wall in front of the ant """
+        """getBlockedFront() : returns true if the ant is blocked in front of it """
         # figure out the direction of the ant and the tile in front of it
         # if the tile in front of it is a wall return true
-        return self.blockedFront
-    
+        return 1 if self.blockedFront else 0
+     
     def GetPherFront(self):
-        """ returns the amount of pheromone in front of the ant """
+        """GetPherFront() : returns the amount of pheromone in front of the ant """
         # get the amount of pheromone in front of the ant
         # return a value between 0 and 1
         return self.pherFront
     
     def foodDir(self):
-        """ returns the direction of the closest food """
+        """foodDir() : returns the direction of the closest food """
         # return the relative direction of the closest food in a value between -1 and 1
         # if there is no food return 0
         if self.ClossestFood == [-1,-1]:
@@ -144,16 +183,16 @@ class Ant:
         dx = self.ClossestFood[0] - self.x
         dy = self.ClossestFood[1] - self.y
         
-        dist = math.sqrt(dx**2 + dy**2)
-        if dist > 5:
-            return 0
+        # dist = math.sqrt(dx**2 + dy**2)
+        # if dist > 5:
+        #     return 0
         
         angle = math.atan2(dy, dx)
         angle = angle - self.direction
         return angle / math.pi
  
     def foodFront(self):
-        """ returns true if there is food in front of the ant """
+        """foodFront() : returns the distance to the closest food in front of the ant """
         #get distance to closest food, then map this distance to a value between 0 and 1
         # limit distance to 5 tiles from the ants position
         if self.ClossestFood == [-1,-1]:
@@ -174,6 +213,7 @@ class Ant:
         return 0
     
     def move(self,ammount):
+        """move() : move the ant in the direction it is facing """
         #limit ammount to 5
         if ammount > .8:
             ammount = .8
@@ -190,11 +230,12 @@ class Ant:
         self.energy -= 1
     
     def turn(self, direction):
+        """turn() : turn the ant in a direction """
         self.direction += direction
         self.energy -= 1
 
     def dropPherimone(self,ammt):
-        """ drop pherimone at the current location """
+        """dropPherimone() : drop pherimone at the current location """
         #limit to 1 or -1
         if ammt > 1:
             ammt = 1
@@ -262,10 +303,9 @@ class AntColony:
         self.ants = []
         #hive pos is 80percent in the corner right
         self.screenSize = _screenSize
-        
-
+        self.FollowNextAnt = False
         #40 pixels per tile
-        self.TileSize = 10
+        self.TileSize = 20
         GridSize = [int(self.screenSize[0]/self.TileSize), int(self.screenSize[1]/self.TileSize)]
         self.hivePos = [int(GridSize[0]*0.8), int(GridSize[1]*0.8)]
         self.foodGrid = WorldGrid(GridSize[0], GridSize[1])
@@ -284,6 +324,7 @@ class AntColony:
         
         self.UpdateTime = 0
         
+        
                  
     def WorldToScreen(self, apos):
         ax = apos[0]/self.width * self.screenSize[0]
@@ -292,6 +333,9 @@ class AntColony:
 
     def add_ant(self, brain=None, startP=None):
         ant = Ant()
+        if self.FollowNextAnt:
+            ant.DebugBrain = True
+            self.FollowNextAnt = False
         
         ant.x = random.randint(0, self.width)
         ant.y = random.randint(0, self.height)
@@ -331,24 +375,31 @@ class AntColony:
         for i in range(10):
             self.add_food()
         # make a cross of walls 70 percent of width and height
-        startX = int(self.width * 0.15)
-        endX = int(self.width * 0.85)
-        startY = int(self.height * 0.15)
-        endY = int(self.height * 0.85)
+        # startX = int(self.width * 0.15)
+        # endX = int(self.width * 0.85)
+        # startY = int(self.height * 0.15)
+        # endY = int(self.height * 0.85)
         
-        for i in range(startX, endX):
-            self.wallGrid.SetVal(i, int(self.height/2), 1)
-        for i in range(startY, endY):
-            self.wallGrid.SetVal(int(self.width/2), i, 1)
+        # for i in range(startX, endX):
+        #     self.wallGrid.SetVal(i, int(self.height/2), 1)
+        # for i in range(startY, endY):
+        #     self.wallGrid.SetVal(int(self.width/2), i, 1)
             
+        
+        #just make some random walls around
+        #width*height * .3
+        numWalls = int(self.width * self.height * .05)
         
             
         #add some random walls
+        for i in range(numWalls):
+            self.add_wall()
            
     def Repopulate(self):
         """repopulate the ants with the best ants"""
         currentAnts = len(self.ants)
         bestAntNum = len(self.BestAnts)
+        
         if bestAntNum == 0:
             #just make new ants
             while len(self.ants) < self.maxAnts:
@@ -360,8 +411,15 @@ class AntColony:
         
         #create new ants from the best ants
         while len(self.ants) < self.maxAnts:
-            ant = Ant()
-            if random.random() > 0.9:
+            # ant = Ant()
+            bestAntScore = self.BestAnts[0]["food"]
+            
+            #make more new ants if the best ant score is less than 10
+            probBest = .1
+            if bestAntScore < 10:
+                probBest = 1-(bestAntScore / 11)
+            
+            if random.random() < probBest:
                 self.add_ant(brain=None, startP=self.hivePos)
             else:
                 #of this remaining, we will join two parents together or we will mutate one of the best ants
@@ -424,24 +482,27 @@ class AntColony:
         """mutate the brain by changing one of the values"""
         #select a random value to change
         #change the src, selector, frc or dest
-        idx = random.randint(0, len(brain)-1)
-        src = brain[idx][0]
-        selector = brain[idx][1]
-        frc = brain[idx][2]
-        dest = brain[idx][3]
-        
-        #change one of the values
-        change = random.randint(0, 3)
-        if change == 0:
-            src = not src
-        elif change == 1:
-            selector = random.randint(0, 1000)
-        elif change == 2:
-            frc = random.random() * 2 - 1
-        elif change == 3:
-            dest = not dest
+        numChanges = random.randint(1, 3)
+        for i in range(numChanges):
+            idx = random.randint(0, len(brain)-1)
+            src = brain[idx][0]
+            selectorSrc = brain[idx][1]
+            selectorDst = brain[idx][2]
+            frc = brain[idx][3]
+            dest = brain[idx][4]
             
-        brain[idx] = (src, selector, frc, dest)
+            #change one of the values
+            change = random.randint(0, 3)
+            if change == 0:
+                src = not src
+            elif change == 1:
+                selector = random.randint(0, 1000)
+            elif change == 2:
+                frc = random.random() * 2 - 1
+            elif change == 3:
+                dest = not dest
+                
+            brain[idx] = (src, selectorSrc, selectorDst, frc, dest)
         return brain
             
     def update(self):
@@ -452,12 +513,21 @@ class AntColony:
             #normal vector of the direction of the ant
             
             antDir = ant.direction % (2*math.pi)
-            
+            #check for NAN values
+            if math.isnan(antDir):
+                #reset the ant direction
+                ant.direction = 0
             normVec = (math.cos(antDir), math.sin(antDir))
             # print(f'antPos: {antPos}, normVec: {normVec}')
-            frontPos = (antPos[0] + normVec[0], antPos[1] + normVec[1])
+            frontPos = (int(antPos[0] + normVec[0]), int(antPos[1] + normVec[1]))
             # print(f'frontPos: {frontPos}')
-            if self.wallGrid.GetVal(int(frontPos[0]), int(frontPos[1])) == 1:
+            #check for NAN values
+            if math.isnan(frontPos[0]) or math.isnan(frontPos[1]):
+                #reset the ant to the hive
+                ant.x = self.hivePos[0]
+                ant.y = self.hivePos[1]
+                ant.direction = 0
+            if self.wallGrid.GetVal(frontPos[0], frontPos[1]) == 1:
                 ant.blockedFront = True
             else:
                 ant.blockedFront = False
@@ -480,7 +550,7 @@ class AntColony:
                 ant.ClossestFood = closestFood
                 
             ant.RunBrain()
-            ant.pDirection = ant.direction
+            ant.pDirection = float(ant.direction)
             #if moved greater than 1 tile, add to the history
             lastknownPos = ant.posHistory[-1] if len(ant.posHistory) > 0 else [ant.x, ant.y]
             moveDist = math.sqrt((ant.x - lastknownPos[0])**2 + (ant.y - lastknownPos[1])**2)
@@ -499,7 +569,7 @@ class AntColony:
             if self.foodGrid.GetVal(int(ant.x), int(ant.y)) == 1: #ANT ON FOOD
                 ant.energy += 10
                 ant.FoodConsumed += 1
-                ant.life += 10 #reward the ant for finding food
+                ant.life += 30 #reward the ant for finding food
                 # print(f'ant consumed food, food consumed: {ant.FoodConsumed}')
                 if ant.FoodConsumed > topFoodCount:
                     print(f'New top ant!!: {ant.FoodConsumed}')
@@ -523,6 +593,8 @@ class AntColony:
                 if pherVal > 0:
                     # print(f'pherVal: {pherVal}')
                     ant.pherFront = pherVal
+                
+
                 
             
             # for food in self.food:
@@ -651,6 +723,21 @@ class AntColony:
             RV = abs(ant.brain[0][2]) * 255
             GV = abs(ant.brain[1][2]) * 255
             BV = abs(ant.brain[2][2]) * 255
+            
+            #limit RGB values to 0-255
+            if RV > 255:
+                RV = 255
+            if GV > 255:
+                GV = 255
+            if BV > 255:
+                BV = 255
+
+            if RV < 0:
+                RV = 0
+            if GV < 0:
+                GV = 0
+            if BV < 0:
+                BV = 0
                             
             #if ant.blockedFront:
             pygame.draw.rect(screen, (RV,GV,BV), (pxy[0]-2.5, pxy[1]-2.5, 5, 5))
@@ -701,6 +788,7 @@ class Game:
         #get arguments and see if it is a raspberry pi
         self.isPi = False
         
+        self.screenSize = (1000, 1000)
         #using argparse
         parser = argparse.ArgumentParser(description='Run the ant simulation')
         parser.add_argument('--pi', action='store_true', help='Run on a Raspberry Pi')
@@ -708,6 +796,7 @@ class Game:
         if args.pi:
             self.isPi = True
             print('Running on Raspberry Pi')
+            self.screenSize = (480, 1920)
         
         # if len(sys.argv) > 1:
         #     print('Arguments: ', sys.argv[1])
@@ -716,7 +805,7 @@ class Game:
         #         print('Running on Raspberry Pi')
 
         pygame.init()
-        self.screenSize = (480, 1920)
+        
                 
         if self.isPi:
             print('Starting display on PI')
@@ -746,13 +835,18 @@ class Game:
         #first run update 20000 times
         lastPercent = 0
         if self.isPi == False:
-            numRuns = 200
+            newAnts = 1000
+            #add new ants before training
+            for i in range(newAnts):
+                self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
+            
+            numRuns = 2000
             for i in range(numRuns):
                 #print every 10 percent
                 percentN = int(i/numRuns * 100)
                 if percentN != lastPercent:
                     print(f'Training: {percentN}%')
-                    print('Time: ', self.antColony.UpdateTime)
+                    print(f'Time(ms): {self.antColony.UpdateTime * 1000}')
                     lastPercent = percentN
                 self.antColony.update()
        
@@ -776,9 +870,27 @@ class Game:
                 self.antColony.saveData()
                 
             if keys[pygame.K_u]:
+                percentDone = 0
                 for i in range(1000):
+                    nowPercent = int(i/1000 * 100)
+                    if nowPercent != percentDone:
+                        print(f'FAST TRAINING: {nowPercent}%')
+                        percentDone = nowPercent
                     self.antColony.update()
-                        
+            
+            #if p is pressed, pick the next ant to debug the brain
+            if keys[pygame.K_p]:
+                # for ant in self.antColony.ants:
+                #     ant.DebugBrain = False
+                #     break
+                self.antColony.FollowNextAnt = True
+                
+            #add key will add 1000 ants
+            if keys[pygame.K_a]:
+                for i in range(1000):
+                    self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
+            
+            
             fps = self.clock.get_fps()
             text = f'FPS: {fps}'
             font = pygame.font.Font(None, 26)

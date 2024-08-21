@@ -688,6 +688,7 @@ class Game:
         if len(sys.argv) > 1:
             if sys.argv[1] == "pi":
                 isPi = True
+                print('Running on Raspberry Pi')
 
         pygame.init()
         self.screenSize = (480, 1920)

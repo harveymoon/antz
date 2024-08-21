@@ -257,8 +257,8 @@ class WorldGrid:
         return active
 
 class AntColony:
-    def __init__(self, _screenSize):
-        self.maxAnts = 200
+    def __init__(self, _screenSize, _maxAnts=200):
+        self.maxAnts = _maxAnts
         self.ants = []
         #hive pos is 80percent in the corner right
         self.screenSize = _screenSize
@@ -577,7 +577,7 @@ class AntColony:
         print(f'Loaded {numNewAnts} best ants from file')
         return
 
-    def drawAnts(self,screen):
+    def drawAnts(self,screen, isPi=False):
         
         #preload the best ants from a file
         #find all files
@@ -610,14 +610,20 @@ class AntColony:
             # if pherVal > 0:
             #     print(f'pherVal: {pherVal}  ColorVal: {colorVal}')
             #brightness of the pheromone is alpha
-            pygame.draw.rect(screen, (0,0,colorVal), (ppxy[0], ppxy[1], self.TileSize, self.TileSize))
-        
-        if time.time() - self.LastSave > 60:
+            pygame.draw.rect(screen, (0,0,colorVal), (int(ppxy[0]), int(ppxy[1]), int(self.TileSize), int(self.TileSize)))
+        timeDelta = time.time() - self.LastSave
+        timeDistance = 60 #save every minute
+        if isPi:
+            timeDistance = 60*60 * hour #save every hour for the pi
+
+        if timeDelta > timeDistance:
+    
             #save the best ants to a file
             self.saveData()
             #also save an image of the screen\
             tCode = time.strftime("%Y%m%d-%H%M%S")
-            pygame.image.save(screen, f'dataSave/{tCode}.png')
+            if isPi == False:
+                pygame.image.save(screen, f'dataSave/{tCode}.png')
             self.LastSave = time.time()
 
         for food in self.foodGrid.listActive():
@@ -726,7 +732,10 @@ class Game:
             
         self.clock = pygame.time.Clock()
         #open on second screen
-        self.antColony = AntColony(self.screenSize)
+        maxAnts = 200
+        if isPi:
+            maxAnts = 80
+        self.antColony = AntColony(self.screenSize, maxAnts=maxAnts)
         # self.antColony.LoadBestAnts()
         #first run update 20000 times
         lastPercent = 0
@@ -752,7 +761,7 @@ class Game:
             self.screen.fill((25,25,25))
 
             self.antColony.update()
-            self.antColony.drawAnts(self.screen)
+            self.antColony.drawAnts(self.screen, isPi=isPi)
 
             keys = pygame.key.get_pressed()
 

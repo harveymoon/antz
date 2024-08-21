@@ -367,13 +367,12 @@ class AntColony:
                 #of this remaining, we will join two parents together or we will mutate one of the best ants
                 
                 if random.random() > 0.5:
-                    
-                    #20% chance a mutation happens
-                    # first copy the brain entirely so you don't mess up the best ant
+                    #mutate one of the best ants
                     newBrain = self.BestAnts[random.randint(0, len(self.BestAnts)-1)]["brain"].copy()
-                    #then mutate it if the chance is right
-                    if random.random() > 0.8:
+
+                    if random.random() > 0.5:
                         newBrain = self.MutateBrain(newBrain)
+                        
                     self.add_ant(brain=newBrain, startP=self.hivePos)
 
                 else:
@@ -415,8 +414,11 @@ class AntColony:
             y = random.randint(qBottom, qTop)
             foodPos = [x, y]
             # print(f'adding food at {foodPos}')
-            self.add_food(foodPos)
-            currentFood = len(self.foodGrid.listActive())
+            #create littel clusters of 20 food
+            for i in range(20):
+                foodPosRand = [foodPos[0] + random.randint(-5, 5), foodPos[1] + random.randint(-5, 5)]
+                self.add_food(foodPosRand)
+                currentFood = len(self.foodGrid.listActive())
             
     def MutateBrain(self, brain):
         """mutate the brain by changing one of the values"""
@@ -610,7 +612,8 @@ class AntColony:
             # if pherVal > 0:
             #     print(f'pherVal: {pherVal}  ColorVal: {colorVal}')
             #brightness of the pheromone is alpha
-            pygame.draw.rect(screen, (0,0,colorVal), (int(ppxy[0]), int(ppxy[1]), int(self.TileSize), int(self.TileSize)))
+            ppxy = (int(ppxy[0]), int(ppxy[1]))
+            pygame.draw.rect(screen, (0,0,colorVal), ((ppxy[0]), (ppxy[1]), int(self.TileSize), int(self.TileSize)))
         timeDelta = time.time() - self.LastSave
         timeDistance = 60 #save every minute
         if isPi:
@@ -630,15 +633,18 @@ class AntColony:
             if food[2] == 0:
                 continue
             fpxy = self.WorldToScreen(food)
+            fpxy = (int(fpxy[0]), int(fpxy[1]))
             pygame.draw.rect(screen, (0, 200, 0), (fpxy[0], fpxy[1], self.TileSize, self.TileSize))
             
         for wall in self.wallGrid.listActive():
             wpxy = self.WorldToScreen(wall)
+            wpxy = (int(wpxy[0]), int(wpxy[1]))
             pygame.draw.rect(screen, (100,100,100), (wpxy[0], wpxy[1], self.TileSize, self.TileSize))
             
 
         for ant in self.ants:
             pxy = self.WorldToScreen((ant.x, ant.y))
+            pxy = (int(pxy[0]), int(pxy[1]))
             #square if the ant is blocked
             
             #antColor is based on the first three force values of the ant brain
@@ -734,15 +740,16 @@ class Game:
         #open on second screen
         maxAnts = 200
         if self.isPi:
-            maxAnts = 80
+            maxAnts = 40
         self.antColony = AntColony(self.screenSize, maxAnts)
         # self.antColony.LoadBestAnts()
         #first run update 20000 times
         lastPercent = 0
         if self.isPi == False:
-            for i in range(20000):
+            numRuns = 200
+            for i in range(numRuns):
                 #print every 10 percent
-                percentN = int(i/20000 * 100)
+                percentN = int(i/numRuns * 100)
                 if percentN != lastPercent:
                     print(f'Training: {percentN}%')
                     print('Time: ', self.antColony.UpdateTime)

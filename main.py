@@ -687,6 +687,7 @@ class Game:
         #get arguments and see if it is a raspberry pi
         isPi = False
         if len(sys.argv) > 1:
+            print('Arguments: ', sys.argv[1])
             if sys.argv[1] == "pi":
                 isPi = True
                 print('Running on Raspberry Pi')
@@ -695,6 +696,7 @@ class Game:
         self.screenSize = (480, 1920)
                 
         if isPi:
+            print('Starting display on PI')
             pygame.display.init()
             pygame.display.list_modes()
             os.environ["SDL_VIDEODRIVER"] = "rbcon" # or maybe 'fbcon'
@@ -703,6 +705,7 @@ class Game:
             # Set up display
             self.screen = pygame.display.set_mode(self.screenSize, pygame.FULLSCREEN)
             # Initialize Pygame
+            print('Hiding cursor')
             pygame.mouse.set_visible(False) # Hide cursor here
         
         else:
@@ -716,14 +719,16 @@ class Game:
         # self.antColony.LoadBestAnts()
         #first run update 20000 times
         lastPercent = 0
-        for i in range(20000):
-            #print every 10 percent
-            percentN = int(i/20000 * 100)
-            if percentN != lastPercent:
-                print(f'Training: {percentN}%')
-                print('Time: ', self.antColony.UpdateTime)
-                lastPercent = percentN
-            self.antColony.update()
+        if isPi == False:
+            for i in range(20000):
+                #print every 10 percent
+                percentN = int(i/20000 * 100)
+                if percentN != lastPercent:
+                    print(f'Training: {percentN}%')
+                    print('Time: ', self.antColony.UpdateTime)
+                    lastPercent = percentN
+                self.antColony.update()
+       
     
     def run(self):
         

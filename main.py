@@ -683,6 +683,7 @@ class AntColony:
 
 class Game:
     def __init__(self):
+        print('Starting Game')
         #get arguments and see if it is a raspberry pi
         isPi = False
         if len(sys.argv) > 1:
@@ -759,5 +760,6 @@ class Game:
         pygame.quit()
 
 if __name__ == "__main__":
+    print('Starting Simulation')
     game = Game()
     game.run()

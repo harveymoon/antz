@@ -29,6 +29,8 @@ import numpy as np
 
 import sys
 
+import argparse
+
 
 class Ant:
     def __init__(self):
@@ -686,11 +688,20 @@ class Game:
         print('Starting Game')
         #get arguments and see if it is a raspberry pi
         isPi = False
-        if len(sys.argv) > 1:
-            print('Arguments: ', sys.argv[1])
-            if sys.argv[1] == "pi":
-                isPi = True
-                print('Running on Raspberry Pi')
+        
+        #using argparse
+        parser = argparse.ArgumentParser(description='Run the ant simulation')
+        parser.add_argument('--pi', action='store_true', help='Run on a Raspberry Pi')
+        args = parser.parse_args()
+        if args.pi:
+            isPi = True
+            print('Running on Raspberry Pi')
+        
+        # if len(sys.argv) > 1:
+        #     print('Arguments: ', sys.argv[1])
+        #     if sys.argv[1] == "pi":
+        #         isPi = True
+        #         print('Running on Raspberry Pi')
 
         pygame.init()
         self.screenSize = (480, 1920)

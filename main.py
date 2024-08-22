@@ -304,14 +304,14 @@ class WorldGrid:
         return active
 
 class AntColony:
-    def __init__(self, _screenSize, _maxAnts):
+    def __init__(self, _screenSize, _maxAnts, _tileSize):
         self.maxAnts = _maxAnts
         self.ants = []
         #hive pos is 80percent in the corner right
         self.screenSize = _screenSize
         self.FollowNextAnt = False
         #40 pixels per tile
-        self.TileSize = 8
+        self.TileSize = _tileSize
         GridSize = [int(self.screenSize[0]/self.TileSize), int(self.screenSize[1]/self.TileSize)]
         self.hivePos = [int(GridSize[0]*0.5), int(GridSize[1]*0.5)]
         self.foodGrid = WorldGrid(GridSize[0], GridSize[1])
@@ -493,8 +493,10 @@ class AntColony:
                 #dont drop within 20 tiles of the hive
                 distToHive = math.sqrt((foodPosRand[0] - self.hivePos[0])**2 + (foodPosRand[1] - self.hivePos[1])**2)
                 if distToHive > 20:
-                    self.add_food(foodPosRand)
-                    currentFood = len(self.foodGrid.listActive())
+                    #dont drop on a wall
+                    if self.wallGrid.GetVal(foodPosRand[0], foodPosRand[1]) == []:
+                        self.add_food(foodPosRand)
+                        currentFood = len(self.foodGrid.listActive())
             
     def MutateBrain(self, brain):
         """mutate the brain by changing one of the values"""
@@ -756,12 +758,20 @@ class AntColony:
                 continue
             fpxy = self.WorldToScreen(food)
             fpxy = (int(fpxy[0]), int(fpxy[1]))
-            pygame.draw.rect(screen, (0, 200, 0), (fpxy[0], fpxy[1], self.TileSize, self.TileSize))
+            # pygame.draw.rect(screen, (0, 200, 0), (fpxy[0], fpxy[1], self.TileSize, self.TileSize))
+            #small green circle empty wih no fill green border
+            cx = fpxy[0] + self.TileSize/2
+            cy = fpxy[1] + self.TileSize/2
+            pygame.draw.circle(screen, (0, 200, 0), (int(cx), int(cy)), int(self.TileSize/2), width=1)
             
         for wall in self.wallGrid.listActive():
             wpxy = self.WorldToScreen(wall)
             wpxy = (int(wpxy[0]), int(wpxy[1]))
-            pygame.draw.rect(screen, (100,100,100), (wpxy[0], wpxy[1], self.TileSize, self.TileSize))
+            # pygame.draw.rect(screen, (100,100,100), (wpxy[0], wpxy[1], self.TileSize, self.TileSize))
+            # small gray hollow box with x inside
+            pygame.draw.rect(screen, (100,100,100), (wpxy[0], wpxy[1], self.TileSize, self.TileSize), width=1)
+            # pygame.draw.line(screen, (100,100,100), (wpxy[0], wpxy[1]), (wpxy[0]+self.TileSize-1, wpxy[1]+self.TileSize-1))
+            # pygame.draw.line(screen, (100,100,100), (wpxy[0]+self.TileSize, wpxy[1]), (wpxy[0]-1, wpxy[1]+self.TileSize-1))
             
 
         for ant in self.ants:
@@ -1010,9 +1020,11 @@ class Game:
         self.clock = pygame.time.Clock()
         #open on second screen
         maxAnts = 300
+        tileSize = 10
         if self.isPi:
             maxAnts = 40
-        self.antColony = AntColony(self.screenSize, maxAnts)
+            tileSize = 25
+        self.antColony = AntColony(self.screenSize, maxAnts, tileSize)
         # self.antColony.LoadBestAnts()
         #first run update 20000 times
         lastPercent = 0
@@ -1022,7 +1034,7 @@ class Game:
             for i in range(newAnts):
                 self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
-            numRuns = 2000
+            numRuns = 20
             maxFoodFound = 0
             for i in range(numRuns):
             # numRuns = 0

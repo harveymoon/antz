@@ -762,7 +762,7 @@ class AntColony:
             #small green circle empty wih no fill green border
             cx = fpxy[0] + self.TileSize/2
             cy = fpxy[1] + self.TileSize/2
-            pygame.draw.circle(screen, (0, 200, 0), (int(cx), int(cy)), int(self.TileSize/2), width=1)
+            pygame.draw.circle(screen, (0, 200, 0), (int(cx), int(cy)), int(self.TileSize/2), 1)
             
         for wall in self.wallGrid.listActive():
             wpxy = self.WorldToScreen(wall)

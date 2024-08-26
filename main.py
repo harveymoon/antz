@@ -1,21 +1,3 @@
-# a simple genetic algorithm of ants
-# each ant has a little brain that we can evolve.
-
-# start with a 6 digit hex code
-# each value will evaluate to a force value
-# the value can be from an input to an output
-# or an input to an intermediary neuron that can hold a value
-# or it can be from that neuron to an output
-
-
-#each ant brain is randomly created from three values
-# each brain will have an in, force and out
-# each brain will be connected to inputs like, direction, food in the front direction, collision in the front direction, last direction, etc
-# each brain will have outputs like, move forward, turn left, turn right, etc
-
-# we can draw the window with pygame
-
-
 import random
 import math
 import time

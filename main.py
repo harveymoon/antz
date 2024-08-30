@@ -40,6 +40,10 @@ class Ant:
         self.posHistory = []
         
         self.DebugBrain = False
+        
+        self.Color = []
+        
+
 
     def create_brain(self, size=6):
         """Create_Brain : create a random brain"""
@@ -50,6 +54,29 @@ class Ant:
            frc = random.random() * 2 - 1
            dest = random.random() > 0.5
            self.brain.append((src, selectorSrc, selectorDst, frc, dest))
+        self.SetColor()
+           
+    def SetColor(self):
+        #antColor is based on the first three force values of the ant brain
+        RV = abs(self.brain[0][2]) * 150
+        GV = abs(self.brain[2][2]) * 100
+        BV = abs(self.brain[4][2]) * 150
+        
+        #limit RGB values to 0-255
+        if RV > 255:
+            RV = 255
+        if GV > 255:
+            GV = 255
+        if BV > 255:
+            BV = 255
+
+        if RV < 0:
+            RV = 0
+        if GV < 0:
+            GV = 0
+        if BV < 0:
+            BV = 0
+        self.Color = [RV, GV, BV]
            
     def closeToFood(self):
         """closeToFood() : returns true if the ant is close to food"""
@@ -118,7 +145,7 @@ class Ant:
                 outIdx = selectorDst % len(self.neurons)
                 self.neurons[outIdx] += (val * frc)
                 if self.DebugBrain:
-                    print(f'Neuron Output Set to: {outIdx}  value: {self.neurons[outIdx]}')
+                    print(f'Neuron Output {outIdx} Set to: value: {self.neurons[outIdx]}')
             if self.DebugBrain:
                 print('____')
         if self.DebugBrain:
@@ -248,6 +275,11 @@ class Ant:
     def turn(self, direction):
         """turn() : turn the ant in a direction """
         self.direction += direction
+        #limit the direction to 0-2pi
+        if self.direction > 2*math.pi:
+            self.direction -= 2*math.pi
+        if self.direction < -2*math.pi:
+            self.direction += 2*math.pi
         self.energy -= 1
 
     def dropPherimone(self,ammt):
@@ -370,10 +402,9 @@ class AntColony:
         ant.y = random.randint(0, self.height)
         if startP:
             ant.x = startP[0]
-            #randomize a little
-            ant.x += random.randint(-5, 5)
+            ant.x += random.random() * 3
             ant.y = startP[1]
-            ant.y += random.randint(-5, 5)
+            ant.y += random.random() * 3
         
         
         
@@ -383,7 +414,12 @@ class AntColony:
             antID[1] = 'N'
             ant.create_brain(random.randint(6, 24))
         ant.antID = antID
+        
+        #load color
+        ant.SetColor()
+        
         self.ants.append(ant)
+        
         return ant
         # print(f'added new ant with brain {ant.brain}')
 
@@ -455,7 +491,7 @@ class AntColony:
            
     def Repopulate(self):
         """repopulate the ants with the best ants"""
-        currentAnts = len(self.ants)
+        # currentAnts = len(self.ants)
         bestAntNum = len(self.BestAnts)
         
         if bestAntNum == 0:
@@ -465,7 +501,8 @@ class AntColony:
             return {'ants':len(self.ants), 'probbest':0}
         #sort and trim the best ants to top 50 ants
         self.BestAnts = sorted(self.BestAnts, key=lambda x: x["food"], reverse=True)
-        self.BestAnts = self.BestAnts[:50]
+        
+        self.BestAnts = self.BestAnts[:50] #only keep the top 10 ants
         probBest = .1
         
         #create new ants from the best ants
@@ -489,8 +526,10 @@ class AntColony:
             else: # add a best ant or pick two best ants as parents
                 if random.random() > 0.5: #fifty fifty chance to mutate the brain or parent
                     
-                    
-                    bestPick = self.BestAnts[random.randint(0, len(self.BestAnts)-1)]
+                    randomInt = random.randint(0, len(self.BestAnts)-1)
+                    # randomInt = random.randint(0, min(5, len(self.BestAnts)-1)) #only pick the top 5 ants
+                
+                    bestPick = self.BestAnts[randomInt]
                     newBrain = bestPick["brain"].copy()
                     
                     newType = "CL" #clone
@@ -539,7 +578,7 @@ class AntColony:
         currentFood = len(self.foodGrid.listActive())
         
         while currentFood < 80: # food scaricity produces more competition for food
-            print(f'Current Food: {currentFood}')
+            # print(f'Current Food: {currentFood}')
             #find a random spot in the quadrant
             qLeft = int(min(quads[quadrant][0][0], quads[quadrant][3][0]))
             qRight = int(max(quads[quadrant][0][0], quads[quadrant][3][0]))
@@ -568,6 +607,9 @@ class AntColony:
             
     def MutateBrain(self, brain):
         """mutate the brain by changing one of the values"""
+        
+        if len(self.ants) == 0:
+            return brain
         #select a random value to change
         #change the src, selector, frc or dest
         numChanges = random.randint(1, 4)
@@ -663,6 +705,9 @@ class AntColony:
 
             ant.life -= 1
             if ant.life <= 0: #DEAD ANT
+                #if debugbrain, pick another ant
+                if ant.DebugBrain:
+                    self.FollowNextAnt = True
                 self.ants.remove(ant)
                 #check how much food the ant consumed
                 foodConsumed = ant.FoodConsumed
@@ -779,8 +824,8 @@ class AntColony:
         #sort the best ants
         bestAntsFound = sorted(bestAntsFound, key=lambda x: x["food"], reverse=True)
         #randomize best ants
-        if len(bestAntsFound) > 50:
-            numTopAnts = 50
+        if len(bestAntsFound) > 20:
+            numTopAnts = min(500, len(bestAntsFound))
             bestAntsFound = bestAntsFound[:numTopAnts]
             print(f"Best Ant Range: {bestAntsFound[0]['food']} - {bestAntsFound[-1]['food']}")
             
@@ -792,15 +837,46 @@ class AntColony:
             for i in range(int(numNewAnts)):
                 randomPick = random.randint(0, len(bestAntsFound)-1)
                 antBrain = bestAntsFound[randomPick]["brain"].copy()
-                if len(antBrain[0])==4: ## old version onlyhad 3 values
+                if len(antBrain)==4: ## old version onlyhad 3 values
                     NAnt = self.add_ant(brain=antBrain, startP=self.hivePos)
                     NAnt.antID[1] = 'L' #loaded ant
                 
             print(f'Loaded {numNewAnts} best ants from file')
 
 
-    def drawAnts(self,screen, isPi=False):
+    def drawPaths(self, screen):
+        # fill screen with .9 alpha so history fades away
+        # screen.setAlpha(10)
+        # screen.fill((25, 25, 25, 50), special_flags=pygame.BLEND_RGBA_MULT)
         
+        fade = pygame.Surface((self.screenSize[0], self.screenSize[1]))
+        fade.fill((25, 25, 25))
+        fade.set_alpha(5)
+        screen.blit(fade, (0, 0))
+        
+        for ant in self.ants:
+            if ant.life <= 1:
+                if len(ant.posHistory) > 1:
+                    for i in range(len(ant.posHistory) - 1):
+                        p1 = self.WorldToScreen(ant.posHistory[i])
+                        p2 = self.WorldToScreen(ant.posHistory[i + 1])
+                        pygame.draw.line(screen, ant.Color, p1, p2, 1)
+                        
+        timeDelta = time.time() - self.LastSave
+        timeDistance = 60 #save every minute
+      
+        if timeDelta > timeDistance:
+            #save the best ants to a file
+            self.saveData()
+            #also save an image of the screen\
+            tCode = time.strftime("%Y%m%d-%H%M%S")
+            pygame.image.save(screen, f'dataSave/{tCode}.png')
+            self.LastSave = time.time()
+
+
+
+    def drawAnts(self,screen, isPi=False):
+        screen.fill((25,25,25))
         #preload the best ants from a file
         #find all files
 
@@ -840,7 +916,6 @@ class AntColony:
             timeDistance = 60*60 # hour #save every hour for the pi
 
         if timeDelta > timeDistance:
-    
             #save the best ants to a file
             self.saveData()
             #also save an image of the screen\
@@ -875,28 +950,12 @@ class AntColony:
             pxy = (int(pxy[0]), int(pxy[1]))
             #square if the ant is blocked
             
-            #antColor is based on the first three force values of the ant brain
-            RV = abs(ant.brain[0][2]) * 255
-            GV = abs(ant.brain[1][2]) * 255
-            BV = abs(ant.brain[2][2]) * 255
-            
-            #limit RGB values to 0-255
-            if RV > 255:
-                RV = 255
-            if GV > 255:
-                GV = 255
-            if BV > 255:
-                BV = 255
-
-            if RV < 0:
-                RV = 0
-            if GV < 0:
-                GV = 0
-            if BV < 0:
-                BV = 0
+            RV = ant.Color[0]
+            GV = ant.Color[1]
+            BV = ant.Color[2]
                             
             #if ant.blockedFront:
-            pygame.draw.rect(screen, (RV,GV,BV), (pxy[0]-2.5, pxy[1]-2.5, 5, 5))
+            pygame.draw.rect(screen, (RV,GV,BV), (pxy[0]-.5, pxy[1]-.5, 1, 1))
             #pos
             # print(f'ant pos: {pxy}')
             # else:
@@ -905,12 +964,7 @@ class AntColony:
             #draw the path of the ant
             # print(ant.posHistory)
           
-            # for i in range(len(ant.posHistory)-1):
-            #     p1 = self.WorldToScreen(ant.posHistory[i])
-            #     p2 = self.WorldToScreen(ant.posHistory[i+1])
-            #     pygame.draw.line(screen, (255, 0, 0), (p1[0], p1[1]), (p2[0], p2[1]))
-
-
+          
 
             #draw the direction of the ant with a line
             # pygame.draw.line(screen, (0, 0, 0), (pxy[0], pxy[1]), (pxy[0] + math.cos(ant.direction) * 10, pxy[1] + math.sin(ant.direction) * 10))
@@ -922,10 +976,55 @@ class AntColony:
             #     fpxy = self.WorldToScreen(ant.ClossestFood)
             #     pygame.draw.line(screen, (0, 255, 0), (pxy[0], pxy[1]), (fpxy[0], fpxy[1]))
             if ant.DebugBrain:
+                
+                #draw a hollow arount the ant 20 pixels
+                
+                #delay for 10 milliseconds
+                pygame.time.delay(50)
+                
+                pygame.draw.circle(screen, (RV,GV,BV), (int(pxy[0]), int(pxy[1])) , 20, width=1)
+                
+                #draw the direction of the ant with a line
+                pygame.draw.line(screen, (0, 0, 0), (pxy[0], pxy[1]), (pxy[0] + math.cos(ant.direction) * 20, pxy[1] + math.sin(ant.direction) * 20 ))
+                
+                #show the ant info next to the ant
+                #direction
+                font = pygame.font.Font(None, 20)
+                text = font.render(f'DIR:{ant.direction}', True, (255,255,255))
+                screen.blit(text, (pxy[0]+10, pxy[1]))
+                #life
+                text = font.render(f'LIFE:{ant.life}', True, (255,255,255))
+                screen.blit(text, (pxy[0]+10, pxy[1]+15))
+                #blockedFront
+                text = font.render(f'BLOCKED:{ant.blockedFront}', True, (255,255,255))
+                screen.blit(text, (pxy[0]+10, pxy[1]+30))
+                #closest food
+                text = font.render(f'CLOSEST F:{ant.ClossestFood}', True, (255,255,255))
+                screen.blit(text, (pxy[0]+10, pxy[1]+45))
+                #foodfront
+                text = font.render(f'PHER F:{ant.pherFront}', True, (255,255,255))
+                screen.blit(text, (pxy[0]+10, pxy[1]+60))
+                #close to food
+                text = font.render(f'CLOSE To FOOD:{ant.closeToFood()}', True, (255,255,255))
+                screen.blit(text, (pxy[0]+10, pxy[1]+75))
+                #foodDir
+                text = font.render(f'FOOD DIR:{ant.foodDir()}', True, (255,255,255))
+                screen.blit(text, (pxy[0]+10, pxy[1]+90))
+                
+                #draw direction to food with line
+                if ant.ClossestFood != [-1,-1]:
+                    fpxy = self.WorldToScreen(ant.ClossestFood)
+                    pygame.draw.line(screen, (0, 255, 0), (pxy[0], pxy[1]), (fpxy[0], fpxy[1]))
+                
+                
+                
+                
                 #display the brain in a box in the right bottom corner
                 #make three columns, one for all the optional inputs, one for the neurons and one for the outputs
                 
                 
+                
+            
                 #draw rect box, gray bg
                 pygame.draw.rect(screen, (50,50,50), (self.screenSize[0]-300, self.screenSize[1]-300, 300, 300))
                 #draw circles for the inputs
@@ -965,8 +1064,6 @@ class AntColony:
                     dstSel = BR[2]
                     frc = BR[3]
                     dest = BR[4]
-                    
-                    
                     
                     
                     yPosStart = 0
@@ -1097,6 +1194,8 @@ class Game:
         #get arguments and see if it is a raspberry pi
         self.isPi = False
         
+        self.maxAnts = 1000
+        
         self.screenSize = (1000, 1000)
         #using argparse
         parser = argparse.ArgumentParser(description='Run the ant simulation')
@@ -1136,46 +1235,46 @@ class Game:
             
         self.clock = pygame.time.Clock()
         #open on second screen
-        maxAnts = 300
-        tileSize = 10
+        self.maxAnts = 1000
+        tileSize = 8
         if self.isPi:
-            maxAnts = 40
+            self.maxAnts = 40
             tileSize = 25
         print('Creating Ant Colony')
-        self.antColony = AntColony(self.screenSize, maxAnts, tileSize)
+        self.antColony = AntColony(self.screenSize, self.maxAnts, tileSize)
         
-        # self.antColony.LoadBestAnts()
+        self.antColony.LoadBestAnts()
         #first run update 20000 times
         lastPercent = 0
         if self.isPi == False:
-            newAnts = 50
+            newAnts = 1000
             #add new ants before training
             print(f'Adding {newAnts} new random ants')
             for i in range(newAnts):
                 self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
-            numRuns = 0
+            numRuns = 10
             maxFoodFound = 0
-            # print('Pre-Training Ants')
-            # for i in range(numRuns):
-            # # numRuns = 0
-            # # while maxFoodFound < 10:
-            #     # numRuns += 1
-            #     #print every 10 percent
-            #     # percentN = int(i/numRuns * 100)
-            #     # if percentN != lastPercent:
-            #     if i % 100 == 0:
-            #         # print(f'Training: {percentN}%')
-            #         print(f'Runs: {i}  MaxFood: {maxFoodFound}')
-            #         print(f"Total Dead Ants: {self.antColony.totalDeadAnts}")
-            #         # print(f'Time(ms): {self.antColony.UpdateTime * 1000}')
-            #         # lastPercent = percentN
+            print('Pre-Training Ants')
+            for i in range(numRuns):
+            # numRuns = 0
+            # while maxFoodFound < 10:
+                # numRuns += 1
+                #print every 10 percent
+                # percentN = int(i/numRuns * 100)
+                # if percentN != lastPercent:
+                if i % 100 == 0:
+                    # print(f'Training: {percentN}%')
+                    print(f'Runs: {i}  MaxFood: {maxFoodFound}')
+                    print(f"Total Dead Ants: {self.antColony.totalDeadAnts}")
+                    # print(f'Time(ms): {self.antColony.UpdateTime * 1000}')
+                    # lastPercent = percentN
                 
-            #     self.antColony.update()
-            #     if len(self.antColony.BestAnts) > 0:
-            #         maxFoodFound = self.antColony.BestAnts[0]["food"]
-            #     else:
-            #         maxFoodFound = 0
+                self.antColony.update()
+                if len(self.antColony.BestAnts) > 0:
+                    maxFoodFound = self.antColony.BestAnts[0]["food"]
+                else:
+                    maxFoodFound = 0
             print("Game Ready")
     
     def run(self):
@@ -1187,12 +1286,13 @@ class Game:
                 if event.type == pygame.QUIT:
                     running = False
 
-            self.screen.fill((25,25,25))
+            
             # print('Updating')
 
             self.antColony.update()
             # print('Drawing')
             self.antColony.drawAnts(self.screen, isPi=self.isPi)
+            # self.antColony.drawPaths(self.screen)
 
             keys = pygame.key.get_pressed()
 
@@ -1226,7 +1326,15 @@ class Game:
             font = pygame.font.Font(None, 26)
             text = font.render(text, True, (255, 255, 255))
             self.screen.blit(text, (self.screenSize[0]-100, 10))
-                    
+            
+            if fps < 10:
+                self.maxAnts-=1
+                #also change the antcolonys max ants
+                self.antColony.maxAnts = self.maxAnts
+            elif fps > 20:
+                self.maxAnts+=1
+                self.antColony.maxAnts = self.maxAnts
+                
             pygame.display.flip()
             # self.clock.tick(120)
             self.clock.tick()

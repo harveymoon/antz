@@ -1329,6 +1329,8 @@ class Game:
             # text = font.render(text, True, (255, 255, 255))
             # self.screen.blit(text, (self.screenSize[0]-100, 10))
             
+            
+
             if fps < 10:
                 self.maxAnts-=1
                 #also change the antcolonys max ants
@@ -1337,6 +1339,9 @@ class Game:
                 self.maxAnts+=1
                 self.antColony.maxAnts = self.maxAnts
                 
+            if self.maxAnts < 5:
+                self.maxAnts = 5
+
             pygame.display.flip()
             # self.clock.tick(120)
             self.clock.tick()

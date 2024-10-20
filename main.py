@@ -844,7 +844,7 @@ class AntColony:
             print(f'Loaded {numNewAnts} best ants from file')
 
 
-    def drawPaths(self, screen):
+    def drawPaths(self, screen, isPi=False):
         # fill screen with .9 alpha so history fades away
         # screen.setAlpha(10)
         # screen.fill((25, 25, 25, 50), special_flags=pygame.BLEND_RGBA_MULT)
@@ -865,13 +865,15 @@ class AntColony:
         timeDelta = time.time() - self.LastSave
         timeDistance = 60 #save every minute
       
-        if timeDelta > timeDistance:
-            #save the best ants to a file
-            self.saveData()
-            #also save an image of the screen\
-            tCode = time.strftime("%Y%m%d-%H%M%S")
-            pygame.image.save(screen, f'dataSave/{tCode}.png')
-            self.LastSave = time.time()
+
+        if isPi:
+            if timeDelta > timeDistance:
+                #save the best ants to a file
+                self.saveData()
+                #also save an image of the screen\
+                tCode = time.strftime("%Y%m%d-%H%M%S")
+                pygame.image.save(screen, f'dataSave/{tCode}.png')
+                self.LastSave = time.time()
 
 
 
@@ -1292,7 +1294,7 @@ class Game:
             self.antColony.update()
             # print('Drawing')
             # self.antColony.drawAnts(self.screen, isPi=self.isPi)
-            self.antColony.drawPaths(self.screen)
+            self.antColony.drawPaths(self.screen, isPi= self.isPi)
 
             keys = pygame.key.get_pressed()
 

@@ -1323,7 +1323,7 @@ class Game:
                     self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
             
-            # fps = self.clock.get_fps()
+            fps = self.clock.get_fps()
             # text = f'FPS: {fps}'
             # font = pygame.font.Font(None, 26)
             # text = font.render(text, True, (255, 255, 255))

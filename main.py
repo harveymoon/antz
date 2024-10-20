@@ -1247,7 +1247,7 @@ class Game:
         #first run update 20000 times
         lastPercent = 0
         if self.isPi == False:
-            newAnts = 1000
+            newAnts = 500
             #add new ants before training
             print(f'Adding {newAnts} new random ants')
             for i in range(newAnts):
@@ -1291,8 +1291,8 @@ class Game:
 
             self.antColony.update()
             # print('Drawing')
-            self.antColony.drawAnts(self.screen, isPi=self.isPi)
-            # self.antColony.drawPaths(self.screen)
+            # self.antColony.drawAnts(self.screen, isPi=self.isPi)
+            self.antColony.drawPaths(self.screen)
 
             keys = pygame.key.get_pressed()
 

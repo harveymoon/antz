@@ -866,14 +866,14 @@ class AntColony:
         timeDistance = 60 #save every minute
       
 
-        if isPi:
-            if timeDelta > timeDistance:
-                #save the best ants to a file
-                self.saveData()
-                #also save an image of the screen\
-                tCode = time.strftime("%Y%m%d-%H%M%S")
-                pygame.image.save(screen, f'dataSave/{tCode}.png')
-                self.LastSave = time.time()
+        # if isPi:
+        #     if timeDelta > timeDistance:
+        #         #save the best ants to a file
+        #         self.saveData()
+        #         #also save an image of the screen\
+        #         tCode = time.strftime("%Y%m%d-%H%M%S")
+        #         pygame.image.save(screen, f'dataSave/{tCode}.png')
+        #         self.LastSave = time.time()
 
 
 
@@ -1323,11 +1323,11 @@ class Game:
                     self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
             
-            fps = self.clock.get_fps()
-            text = f'FPS: {fps}'
-            font = pygame.font.Font(None, 26)
-            text = font.render(text, True, (255, 255, 255))
-            self.screen.blit(text, (self.screenSize[0]-100, 10))
+            # fps = self.clock.get_fps()
+            # text = f'FPS: {fps}'
+            # font = pygame.font.Font(None, 26)
+            # text = font.render(text, True, (255, 255, 255))
+            # self.screen.blit(text, (self.screenSize[0]-100, 10))
             
             if fps < 10:
                 self.maxAnts-=1

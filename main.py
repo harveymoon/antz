@@ -448,15 +448,15 @@ class AntColony:
         for i in range(10):
             self.add_food()
         # make a cross of walls 70 percent of width and height
-        # startX = int(self.width * 0.15)
-        # endX = int(self.width * 0.85)
-        # startY = int(self.height * 0.15)
-        # endY = int(self.height * 0.85)
+        startX = int(self.width * 0.15)
+        endX = int(self.width * 0.85)
+        startY = int(self.height * 0.15)
+        endY = int(self.height * 0.85)
         
-        # for i in range(startX, endX):
-        #     self.wallGrid.SetVal(i, int(self.height/2), 1)
-        # for i in range(startY, endY):
-        #     self.wallGrid.SetVal(int(self.width/2), i, 1)
+        for i in range(startX, endX):
+            self.wallGrid.SetVal(i, int(self.height/2), 1)
+        for i in range(startY, endY):
+            self.wallGrid.SetVal(int(self.width/2), i, 1)
             
         
         #just make some random walls around
@@ -562,13 +562,14 @@ class AntColony:
                     newAnt = self.add_ant(brain=newBrain, startP=self.hivePos)
                     newAnt.antID[1] = "CH" #child
         return {'ants':len(self.ants), 'probbest':probBest}            
-    def ReplenishFood(self):
+    def ReplenishFood(self, quadrant):
         """add food to the grid"""
         
         # specific quadrant for each food every minute
         timeSinceStart = time.time() - self.StartTime
         #every 1 minute switch the food to a new quadrant
-        quadrant = int(timeSinceStart / 120) % 4
+        # quadrant = int(timeSinceStart / 240) % 4
+
         quads = []
         for i in range(2):
             for j in range(2):
@@ -577,7 +578,7 @@ class AntColony:
         # count current food and add more as needed
         currentFood = len(self.foodGrid.listActive())
         
-        while currentFood < 80: # food scaricity produces more competition for food
+        while currentFood < 100: # food scaricity produces more competition for food
             # print(f'Current Food: {currentFood}')
             #find a random spot in the quadrant
             qLeft = int(min(quads[quadrant][0][0], quads[quadrant][3][0]))
@@ -596,7 +597,7 @@ class AntColony:
                 #dont drop within 20 tiles of the hive
                 distToHive = math.sqrt((foodPosRand[0] - self.hivePos[0])**2 + (foodPosRand[1] - self.hivePos[1])**2)
                
-                if distToHive > 30:
+                if distToHive > 35:
                     # print(f'distToHive: {distToHive}')
                     #dont drop on a wall
                     worldVal = self.wallGrid.GetVal(foodPosRand[0], foodPosRand[1])
@@ -728,7 +729,10 @@ class AntColony:
                         ant.ClossestFood = [-1,-1]
                         ant.energy += 10
                         ant.FoodConsumed += 1
-                        ant.life += 10 #reward the ant for finding food
+                        ant.life += 5 #reward the ant for finding food
+                        if ant.life > 200:
+                            ant.life = 200 #keep things reasonable, some ants are too good
+
                         # print(f'ant consumed food, food consumed: {ant.FoodConsumed}')
                         if ant.FoodConsumed > self.topFoodFound:
                             print(f'New top ant!!: {ant.FoodConsumed}')
@@ -786,7 +790,8 @@ class AntColony:
                 self.pheromoneGrid.SetVal(pher[0], pher[1], pher[2]-.005)
 
         # print('pheromone updated')
-        self.ReplenishFood()
+        quadrant = int(self.totalSteps / 1000) % 4
+        self.ReplenishFood(quadrant)
         # print('food replenished')
         repop_result = self.Repopulate()
         endTime = time.time()
@@ -855,7 +860,10 @@ class AntColony:
         
         fade = pygame.Surface((self.screenSize[0], self.screenSize[1]))
         fade.fill((25, 25, 25))
-        fade.set_alpha(5)
+        if isPi:
+            fade.set_alpha(15)
+        else:
+            fade.set_alpha(5)
         screen.blit(fade, (0, 0))
         
         for ant in self.ants:

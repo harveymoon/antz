@@ -683,7 +683,7 @@ class AntColony:
                 dist = math.sqrt((ant.x - food[0])**2 + (ant.y - food[1])**2)
                 if dist < closest:
                     closest = dist
-                    if dist < 20:
+                    if dist < 10:
                         closestFood = food
             if closestFood != [-1,-1]:
                 ant.ClossestFood = closestFood
@@ -824,7 +824,7 @@ class AntColony:
         #sort the best ants
         bestAntsFound = sorted(bestAntsFound, key=lambda x: x["food"], reverse=True)
         #randomize best ants
-        if len(bestAntsFound) > 20:
+        if len(bestAntsFound) > 100:
             numTopAnts = min(500, len(bestAntsFound))
             bestAntsFound = bestAntsFound[:numTopAnts]
             print(f"Best Ant Range: {bestAntsFound[0]['food']} - {bestAntsFound[-1]['food']}")
@@ -834,14 +834,18 @@ class AntColony:
             
             #top ants getmore new ants
             numNewAnts = 1000
+            loadedAnts = 0
             for i in range(int(numNewAnts)):
                 randomPick = random.randint(0, len(bestAntsFound)-1)
                 antBrain = bestAntsFound[randomPick]["brain"].copy()
-                if len(antBrain)==4: ## old version onlyhad 3 values
+                # print(f'antBrain: {antBrain}')
+                # print(f'antBrainLen: {len(antBrain[0])}')
+                if len(antBrain[0])==5: ## old version onlyhad 3 values
                     NAnt = self.add_ant(brain=antBrain, startP=self.hivePos)
                     NAnt.antID[1] = 'L' #loaded ant
+                    loadedAnts += 1
                 
-            print(f'Loaded {numNewAnts} best ants from file')
+            print(f'Loaded {loadedAnts} best ants from file')
 
 
     def drawPaths(self, screen, isPi=False):
@@ -866,14 +870,15 @@ class AntColony:
         timeDistance = 60 #save every minute
       
 
-        # if isPi:
-        #     if timeDelta > timeDistance:
-        #         #save the best ants to a file
-        #         self.saveData()
-        #         #also save an image of the screen\
-        #         tCode = time.strftime("%Y%m%d-%H%M%S")
-        #         pygame.image.save(screen, f'dataSave/{tCode}.png')
-        #         self.LastSave = time.time()
+
+        if timeDelta > timeDistance:
+            #save the best ants to a file
+            self.saveData()
+            #also save an image of the screen\
+            if isPi == False:
+                tCode = time.strftime("%Y%m%d-%H%M%S")
+                pygame.image.save(screen, f'dataSave/{tCode}.png')
+                self.LastSave = time.time()
 
 
 

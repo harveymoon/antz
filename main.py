@@ -519,7 +519,7 @@ class AntColony:
             elif bestAntScore < 20:
                 probBest = .5
             else:
-                probBest = .1
+                probBest = 0
             
             if random.random() < probBest: # if less then probBest, add a random ant
                 self.add_ant(brain=None, startP=self.hivePos)

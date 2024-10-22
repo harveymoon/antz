@@ -1335,7 +1335,7 @@ class Game:
             #dubug only
             if self.debugMode:
                 if ticks % 10 == 0:
-                print(f'Ticks: {ticks}')
+                    print(f'Ticks: {ticks}')
             
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:

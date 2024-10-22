@@ -783,7 +783,7 @@ class AntColony:
         print('ants updated')
         #remove old pherimone cells, anything less than 0
         activePhers = self.pheromoneGrid.listActive()
-        # print(f'activePhers: {len(activePhers)}')
+        print(f'activePhers: {len(activePhers)}')
         for pher in activePhers:
             # print(f'pher: {pher}')
             if pher[2] <= 0:
@@ -792,10 +792,11 @@ class AntColony:
                 #decay the pheromone
                 self.pheromoneGrid.SetVal(pher[0], pher[1], pher[2]-.005)
 
-        # print('pheromone updated')
+        print('pheromone updated')
         quadrant = int(self.totalSteps / 1000) % 4
         self.ReplenishFood(quadrant)
-        # print('food replenished')
+        print('food replenished')
+        
         repop_result = self.Repopulate()
         endTime = time.time()
         self.UpdateTime = endTime - startTime

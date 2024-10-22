@@ -874,10 +874,11 @@ class AntColony:
         
         fade = pygame.Surface((self.screenSize[0], self.screenSize[1]))
         fade.fill((25, 25, 25))
-        if isPi:
-            fade.set_alpha(10)
-        else:
-            fade.set_alpha(5)
+        # if isPi:
+        #     fade.set_alpha(10)
+        # else:
+        #     fade.set_alpha(5)
+        fade.set_alpha(5)
         screen.blit(fade, (0, 0))
         
         for ant in self.ants:

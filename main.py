@@ -1239,6 +1239,8 @@ class Game:
 
         pygame.init()
         
+        self.maxAnts = 1000
+        tileSize = 8
                 
         if self.isPi:
             print('Starting display on PI')
@@ -1252,6 +1254,9 @@ class Game:
             # Initialize Pygame
             print('Hiding cursor')
             pygame.mouse.set_visible(False) # Hide cursor here
+
+            self.maxAnts = 40
+            tileSize = 25
         
         else:
             os.environ["SDL_VIDEO_WINDOW_POS"] = "-1100,0"
@@ -1259,12 +1264,8 @@ class Game:
             
             
         self.clock = pygame.time.Clock()
-        #open on second screen
-        self.maxAnts = 1000
-        tileSize = 8
-        if self.isPi:
-            self.maxAnts = 40
-            tileSize = 25
+
+           
         print('Creating Ant Colony')
         self.antColony = AntColony(self.screenSize, self.maxAnts, tileSize)
         
@@ -1307,7 +1308,9 @@ class Game:
         running = True
         print('Running PYGAME instance now')
         ticks = 0
-        while running:
+        while 1 == 1:
+
+            print('RUNNING')
 
             ticks += 1
 

@@ -823,7 +823,7 @@ class AntColony:
         # print('update done')
 
 
-    def LoadBestAnts(self):
+    def LoadBestAnts(self, quantity):
         """load the best ants from a file"""
         print("Loading Best Ants")
         bestAntsFound = []
@@ -842,7 +842,7 @@ class AntColony:
         #sort the best ants
         bestAntsFound = sorted(bestAntsFound, key=lambda x: x["food"], reverse=True)
         #randomize best ants
-        print(f'Loaded {len(bestAntsFound)} best ants from file')
+        print(f'Found {len(bestAntsFound)} best ants from files')
         if len(bestAntsFound) > 100:
             numTopAnts = min(500, len(bestAntsFound))
             bestAntsFound = bestAntsFound[:numTopAnts]
@@ -852,7 +852,7 @@ class AntColony:
             #add these ants to the game
             
             #top ants getmore new ants
-            numNewAnts = 1000
+            numNewAnts = quantity
             loadedAnts = 0
             for i in range(int(numNewAnts)):
                 randomPick = random.randint(0, len(bestAntsFound)-1)
@@ -1288,7 +1288,7 @@ class Game:
         print('Creating Ant Colony')
         self.antColony = AntColony(self.screenSize, self.maxAnts, tileSize)
         
-        self.antColony.LoadBestAnts()
+        self.antColony.LoadBestAnts( self.maxAnts )
 
         #first run update 20000 times
         lastPercent = 0

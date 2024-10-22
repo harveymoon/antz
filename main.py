@@ -1304,7 +1304,7 @@ class Game:
 
             ticks += 1
 
-            if ticks % 100 == 0:
+            if ticks % 10 == 0:
                 print(f'Ticks: {ticks}')
             
             for event in pygame.event.get():

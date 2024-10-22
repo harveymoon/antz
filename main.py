@@ -643,7 +643,7 @@ class AntColony:
     def update(self):
         self.totalSteps += 1
         
-        # print(f'Current Steps: {self.totalSteps}')
+        print(f'Current Steps: {self.totalSteps}')
            
         startTime = time.time()
         for ant in self.ants:
@@ -810,6 +810,8 @@ class AntColony:
             print("----------------------------------------")
             #randomize the hive pos
             self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
+
+        print('update done')
 
 
     def LoadBestAnts(self):

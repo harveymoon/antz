@@ -1211,6 +1211,7 @@ class Game:
         print('Starting Game')
         #get arguments and see if it is a raspberry pi
         self.isPi = False
+        self.drawPaths = False
         
         self.maxAnts = 1000
         
@@ -1218,11 +1219,17 @@ class Game:
         #using argparse
         parser = argparse.ArgumentParser(description='Run the ant simulation')
         parser.add_argument('--pi', action='store_true', help='Run on a Raspberry Pi')
+        parser.add_argument('--paths', action='store_true', help='Draw the paths of the ants')
         args = parser.parse_args()
         if args.pi:
             self.isPi = True
             print('Running on Raspberry Pi')
             self.screenSize = (480, 1920)
+
+        if args.paths:
+            self.drawPaths = True
+            print('Path Mode')
+
         
         # if len(sys.argv) > 1:
         #     print('Arguments: ', sys.argv[1])
@@ -1304,8 +1311,8 @@ class Game:
 
             ticks += 1
 
-            if ticks % 10 == 0:
-                print(f'Ticks: {ticks}')
+            # if ticks % 10 == 0:
+            print(f'Ticks: {ticks}')
             
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -1316,8 +1323,12 @@ class Game:
 
             self.antColony.update()
             # print('Drawing')
+
+            if self.drawPaths:
             # self.antColony.drawAnts(self.screen, isPi=self.isPi)
-            self.antColony.drawPaths(self.screen, isPi= self.isPi)
+                self.antColony.drawPaths(self.screen, isPi= self.isPi)
+            else:
+                self.antColony.drawAnts(self.screen, isPi=self.isPi)
 
             keys = pygame.key.get_pressed()
 
@@ -1363,7 +1374,7 @@ class Game:
                 self.antColony.maxAnts = self.maxAnts
                 
             if self.maxAnts < 5:
-                self.maxAnts = 5
+                self.antColony.maxAnts = 5
 
             pygame.display.flip()
             # self.clock.tick(120)

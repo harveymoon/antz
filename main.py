@@ -1274,8 +1274,8 @@ class Game:
             print('Hiding cursor')
             pygame.mouse.set_visible(False) # Hide cursor here
 
-            self.maxAnts = 40
-            tileSize = 25
+            self.maxAnts = 80
+            tileSize = 20
         
         else:
             os.environ["SDL_VIDEO_WINDOW_POS"] = "-1100,0"

@@ -647,10 +647,10 @@ class AntColony:
     def update(self):
         self.totalSteps += 1
         
-        print(f'Current Steps: {self.totalSteps}')
+        # print(f'Current Steps: {self.totalSteps}')
 
         #number of ants
-        print(f'Number of ants: {len(self.ants)}')
+        # print(f'Number of ants: {len(self.ants)}')
            
         startTime = time.time()
         for ant in self.ants:
@@ -784,10 +784,10 @@ class AntColony:
             #     if ant.x == wall[0] and ant.y == wall[1]:
             #         ant.energy -= 10
 
-        print('ants updated')
+        # print('ants updated')
         #remove old pherimone cells, anything less than 0
         activePhers = self.pheromoneGrid.listActive()
-        print(f'activePhers: {len(activePhers)}')
+        # print(f'activePhers: {len(activePhers)}')
         for pher in activePhers:
             # print(f'pher: {pher}')
             if pher[2] <= 0:
@@ -796,11 +796,11 @@ class AntColony:
                 #decay the pheromone
                 self.pheromoneGrid.SetVal(pher[0], pher[1], pher[2]-.005)
 
-        print('pheromone updated')
+        # print('pheromone updated')
         quadrant = int(self.totalSteps / 1000) % 4
 
         self.ReplenishFood(quadrant, 50)
-        print('food replenished')
+        # print('food replenished')
 
         repop_result = self.Repopulate()
         endTime = time.time()

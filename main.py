@@ -814,6 +814,7 @@ class AntColony:
 
     def LoadBestAnts(self):
         """load the best ants from a file"""
+        print("Loading Best Ants")
         bestAntsFound = []
         #find and load every file you can find. add all ants and select the top 50
         
@@ -822,6 +823,7 @@ class AntColony:
             for file in files:
                 if file.endswith('.json'):
                     with open(f'{searchFolder}/{file}', 'r') as f:
+                        print(f'Loading: {file}')
                         data = f.read()
                         data = json.loads(data)
                         bestAnts = data["BestAnts"]
@@ -829,6 +831,7 @@ class AntColony:
         #sort the best ants
         bestAntsFound = sorted(bestAntsFound, key=lambda x: x["food"], reverse=True)
         #randomize best ants
+        print(f'Loaded {len(bestAntsFound)} best ants from file')
         if len(bestAntsFound) > 100:
             numTopAnts = min(500, len(bestAntsFound))
             bestAntsFound = bestAntsFound[:numTopAnts]

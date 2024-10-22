@@ -565,8 +565,8 @@ class AntColony:
     def ReplenishFood(self, quadrant, ammt):
         """add food to the grid"""
 
-        print("replenishing food")
-        print(f'quadrant: {quadrant}')
+        # print("replenishing food")
+        # print(f'quadrant: {quadrant}')
         
         # specific quadrant for each food every minute
         timeSinceStart = time.time() - self.StartTime
@@ -582,7 +582,7 @@ class AntColony:
         currentFood = len(self.foodGrid.listActive())
         
         while currentFood < ammt: # food scaricity produces more competition for food
-            print(f'Current Food: {currentFood}')
+            # print(f'Current Food: {currentFood}')
             #find a random spot in the quadrant
             qLeft = int(min(quads[quadrant][0][0], quads[quadrant][3][0]))
             qRight = int(max(quads[quadrant][0][0], quads[quadrant][3][0]))
@@ -608,7 +608,7 @@ class AntColony:
                     if worldVal == False or worldVal == []:
                         self.add_food(foodPosRand)
                         currentFood = len(self.foodGrid.listActive())
-        print('food replenished')
+        # print('food replenished')
             
     def MutateBrain(self, brain):
         """mutate the brain by changing one of the values"""
@@ -1223,6 +1223,7 @@ class Game:
         #get arguments and see if it is a raspberry pi
         self.isPi = False
         self.drawPaths = False
+        self.debugMode = False
         
         self.maxAnts = 1000
         
@@ -1231,6 +1232,8 @@ class Game:
         parser = argparse.ArgumentParser(description='Run the ant simulation')
         parser.add_argument('--pi', action='store_true', help='Run on a Raspberry Pi')
         parser.add_argument('--paths', action='store_true', help='Draw the paths of the ants')
+        #add debug mode
+        parser.add_argument('--debug', action='store_true', help='Debug mode')
         args = parser.parse_args()
         if args.pi:
             self.isPi = True
@@ -1240,6 +1243,10 @@ class Game:
         if args.paths:
             self.drawPaths = True
             print('Path Mode')
+
+        if args.debug:
+            print('Debug Mode')
+            self.debugMode = True
 
         
         # if len(sys.argv) > 1:
@@ -1322,22 +1329,20 @@ class Game:
         ticks = 0
         while running:
 
-            print('RUNNING')
-
+     
             ticks += 1
 
-            # if ticks % 10 == 0:
-            print(f'Ticks: {ticks}')
+            #dubug only
+            if self.debugMode:
+                if ticks % 10 == 0:
+                print(f'Ticks: {ticks}')
             
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
 
-            
-            print('Updating')
 
             self.antColony.update()
-            print('Drawing')
 
             if self.drawPaths:
             # self.antColony.drawAnts(self.screen, isPi=self.isPi)

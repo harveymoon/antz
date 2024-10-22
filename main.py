@@ -1270,6 +1270,7 @@ class Game:
         self.antColony = AntColony(self.screenSize, self.maxAnts, tileSize)
         
         # self.antColony.LoadBestAnts()
+
         #first run update 20000 times
         lastPercent = 0
         if self.isPi == False:
@@ -1308,7 +1309,7 @@ class Game:
         running = True
         print('Running PYGAME instance now')
         ticks = 0
-        while 1 == 1:
+        while running:
 
             print('RUNNING')
 
@@ -1322,10 +1323,10 @@ class Game:
                     running = False
 
             
-            # print('Updating')
+            print('Updating')
 
             self.antColony.update()
-            # print('Drawing')
+            print('Drawing')
 
             if self.drawPaths:
             # self.antColony.drawAnts(self.screen, isPi=self.isPi)
@@ -1333,6 +1334,9 @@ class Game:
             else:
                 self.antColony.drawAnts(self.screen, isPi=self.isPi)
 
+
+
+            # KEY PRESSES
             keys = pygame.key.get_pressed()
 
             if keys[pygame.K_s]:
@@ -1359,14 +1363,14 @@ class Game:
                 for i in range(1000):
                     self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
+
+            ###
             
             fps = self.clock.get_fps()
             # text = f'FPS: {fps}'
             # font = pygame.font.Font(None, 26)
             # text = font.render(text, True, (255, 255, 255))
             # self.screen.blit(text, (self.screenSize[0]-100, 10))
-            
-            
 
             if fps < 10:
                 self.maxAnts-=1
@@ -1377,7 +1381,8 @@ class Game:
                 self.antColony.maxAnts = self.maxAnts
                 
             if self.maxAnts < 5:
-                self.antColony.maxAnts = 5
+                self.maxAnts = 5
+                self.antColony.maxAnts = self.maxAnts
 
             pygame.display.flip()
             # self.clock.tick(120)

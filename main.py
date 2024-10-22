@@ -900,7 +900,8 @@ class AntColony:
             if isPi == False:
                 tCode = time.strftime("%Y%m%d-%H%M%S")
                 pygame.image.save(screen, f'dataSave/{tCode}.png')
-                self.LastSave = time.time()
+            
+            self.LastSave = time.time()
 
 
 

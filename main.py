@@ -644,6 +644,9 @@ class AntColony:
         self.totalSteps += 1
         
         print(f'Current Steps: {self.totalSteps}')
+
+        #number of ants
+        print(f'Number of ants: {len(self.ants)}')
            
         startTime = time.time()
         for ant in self.ants:
@@ -777,7 +780,7 @@ class AntColony:
             #     if ant.x == wall[0] and ant.y == wall[1]:
             #         ant.energy -= 10
 
-        # print('ants updated')
+        print('ants updated')
         #remove old pherimone cells, anything less than 0
         activePhers = self.pheromoneGrid.listActive()
         # print(f'activePhers: {len(activePhers)}')

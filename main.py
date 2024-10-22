@@ -820,7 +820,7 @@ class AntColony:
             #randomize the hive pos
             self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
 
-        print('update done')
+        # print('update done')
 
 
     def LoadBestAnts(self):
@@ -1200,7 +1200,7 @@ class AntColony:
         
         #check to see if the data chenged from last time
         if self.BestAnts == self.LastBestAnts:
-            print('No changes to save')
+            # print('No changes to save')
             return
         
         self.LastBestAnts = self.BestAnts

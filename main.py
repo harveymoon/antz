@@ -562,7 +562,7 @@ class AntColony:
                     newAnt = self.add_ant(brain=newBrain, startP=self.hivePos)
                     newAnt.antID[1] = "CH" #child
         return {'ants':len(self.ants), 'probbest':probBest}            
-    def ReplenishFood(self, quadrant):
+    def ReplenishFood(self, quadrant, ammt):
         """add food to the grid"""
 
         print("replenishing food")
@@ -581,7 +581,7 @@ class AntColony:
         # count current food and add more as needed
         currentFood = len(self.foodGrid.listActive())
         
-        while currentFood < 100: # food scaricity produces more competition for food
+        while currentFood < ammt: # food scaricity produces more competition for food
             print(f'Current Food: {currentFood}')
             #find a random spot in the quadrant
             qLeft = int(min(quads[quadrant][0][0], quads[quadrant][3][0]))
@@ -798,7 +798,8 @@ class AntColony:
 
         print('pheromone updated')
         quadrant = int(self.totalSteps / 1000) % 4
-        self.ReplenishFood(quadrant)
+
+        self.ReplenishFood(quadrant, 50)
         print('food replenished')
 
         repop_result = self.Repopulate()

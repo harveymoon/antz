@@ -1293,11 +1293,12 @@ class Game:
                     maxFoodFound = self.antColony.BestAnts[0]["food"]
                 else:
                     maxFoodFound = 0
-            print("Game Ready")
+        print("Game Ready")
     
     def run(self):
         
         running = True
+        print('Running PYGAME instance now')
         while running:
             
             for event in pygame.event.get():

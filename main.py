@@ -1269,7 +1269,7 @@ class Game:
         print('Creating Ant Colony')
         self.antColony = AntColony(self.screenSize, self.maxAnts, tileSize)
         
-        self.antColony.LoadBestAnts()
+        # self.antColony.LoadBestAnts()
         #first run update 20000 times
         lastPercent = 0
         if self.isPi == False:

@@ -564,6 +564,9 @@ class AntColony:
         return {'ants':len(self.ants), 'probbest':probBest}            
     def ReplenishFood(self, quadrant):
         """add food to the grid"""
+
+        print("replenishing food")
+        print(f'quadrant: {quadrant}')
         
         # specific quadrant for each food every minute
         timeSinceStart = time.time() - self.StartTime
@@ -579,7 +582,7 @@ class AntColony:
         currentFood = len(self.foodGrid.listActive())
         
         while currentFood < 100: # food scaricity produces more competition for food
-            # print(f'Current Food: {currentFood}')
+            print(f'Current Food: {currentFood}')
             #find a random spot in the quadrant
             qLeft = int(min(quads[quadrant][0][0], quads[quadrant][3][0]))
             qRight = int(max(quads[quadrant][0][0], quads[quadrant][3][0]))
@@ -605,6 +608,7 @@ class AntColony:
                     if worldVal == False or worldVal == []:
                         self.add_food(foodPosRand)
                         currentFood = len(self.foodGrid.listActive())
+        print('food replenished')
             
     def MutateBrain(self, brain):
         """mutate the brain by changing one of the values"""
@@ -796,7 +800,7 @@ class AntColony:
         quadrant = int(self.totalSteps / 1000) % 4
         self.ReplenishFood(quadrant)
         print('food replenished')
-        
+
         repop_result = self.Repopulate()
         endTime = time.time()
         self.UpdateTime = endTime - startTime

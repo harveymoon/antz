@@ -1299,7 +1299,13 @@ class Game:
         
         running = True
         print('Running PYGAME instance now')
+        ticks = 0
         while running:
+
+            ticks += 1
+
+            if ticks % 100 == 0:
+                print(f'Ticks: {ticks}')
             
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:

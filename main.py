@@ -48,34 +48,31 @@ class Ant:
     def create_brain(self, size=6):
         """Create_Brain : create a random brain"""
         for i in range(size):
-           src = random.random() > 0.5
-           selectorSrc = random.randint(0, max(len(self.InputSources), len(self.neurons)))
-           selectorDst = random.randint(0, max(len(self.OutputDestinations), len(self.neurons)))
-           frc = random.random() * 2 - 1
-           dest = random.random() > 0.5
-           self.brain.append((src, selectorSrc, selectorDst, frc, dest))
+        src = random.random() > 0.5
+        dest = random.random() > 0.5
+        if src:
+            selectorSrc = random.randint(0, len(self.InputSources) - 1)
+        else:
+            selectorSrc = random.randint(0, len(self.neurons) - 1)
+        if dest:
+            selectorDst = random.randint(0, len(self.OutputDestinations) - 1)
+        else:
+            selectorDst = random.randint(0, len(self.neurons) - 1)
+        frc = random.uniform(-1, 1)
+        self.brain.append((src, selectorSrc, selectorDst, frc, dest))
         self.SetColor()
            
     def SetColor(self):
-        #antColor is based on the first three force values of the ant brain
-        RV = abs(self.brain[0][2]) * 150
-        GV = abs(self.brain[2][2]) * 100
-        BV = abs(self.brain[4][2]) * 150
-        
-        #limit RGB values to 0-255
-        if RV > 255:
-            RV = 255
-        if GV > 255:
-            GV = 255
-        if BV > 255:
-            BV = 255
+        # antColor is based on the first three force values of the ant brain
+        RV = abs(self.brain[0][3]) * 250
+        GV = abs(self.brain[2][3]) * 200
+        BV = abs(self.brain[4][3]) * 250
 
-        if RV < 0:
-            RV = 0
-        if GV < 0:
-            GV = 0
-        if BV < 0:
-            BV = 0
+        # Limit RGB values to 0-255
+        RV = min(max(RV, 0), 255)
+        GV = min(max(GV, 0), 255)
+        BV = min(max(BV, 0), 255)
+
         self.Color = [RV, GV, BV]
            
     def closeToFood(self):
@@ -609,40 +606,48 @@ class AntColony:
                         self.add_food(foodPosRand)
                         currentFood = len(self.foodGrid.listActive())
         # print('food replenished')
-            
+
+        
     def MutateBrain(self, brain):
         """mutate the brain by changing one of the values"""
-        
         if len(self.ants) == 0:
             return brain
-        #select a random value to change
-        #change the src, selector, frc or dest
         numChanges = random.randint(1, 4)
         for i in range(numChanges):
             idx = random.randint(0, len(brain)-1)
-            
-            src = brain[idx][0]
-            selectorSrc = brain[idx][1]
-            selectorDst = brain[idx][2]
-            frc = brain[idx][3]
-            dest = brain[idx][4]
-            
-            #change one of the values
+            src, selectorSrc, selectorDst, frc, dest = brain[idx]
             change = random.randint(0, 4)
             if change == 0:
                 src = not src
+                # Re-assign selectorSrc based on the new src value
+                if src:
+                    selectorSrc = random.randint(0, len(self.ants[0].InputSources) - 1)
+                else:
+                    selectorSrc = random.randint(0, len(self.ants[0].neurons) - 1)
             elif change == 1:
-                selectorSrc = random.randint(0, max(len(self.ants[0].InputSources), len(self.ants[0].neurons)))
+                # Change selectorSrc within the appropriate range
+                if src:
+                    selectorSrc = random.randint(0, len(self.ants[0].InputSources) - 1)
+                else:
+                    selectorSrc = random.randint(0, len(self.ants[0].neurons) - 1)
             elif change == 2:
-                selectorDst = random.randint(0, max(len(self.ants[0].OutputDestinations), len(self.ants[0].neurons)))
+                # Change selectorDst within the appropriate range
+                if dest:
+                    selectorDst = random.randint(0, len(self.ants[0].OutputDestinations) - 1)
+                else:
+                    selectorDst = random.randint(0, len(self.ants[0].neurons) - 1)
             elif change == 3:
-                frc = random.random() * 2 - 1
+                frc = random.uniform(-1, 1)
             elif change == 4:
                 dest = not dest
-            
-                
+                # Re-assign selectorDst based on the new dest value
+                if dest:
+                    selectorDst = random.randint(0, len(self.ants[0].OutputDestinations) - 1)
+                else:
+                    selectorDst = random.randint(0, len(self.ants[0].neurons) - 1)
             brain[idx] = (src, selectorSrc, selectorDst, frc, dest)
         return brain
+
             
     def update(self):
         self.totalSteps += 1

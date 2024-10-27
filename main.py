@@ -62,7 +62,8 @@ class Ant:
 
     def create_brain(self, size=12):
         """Create_Brain : create a random brain"""
-        for i in range(size):
+        brainSize = random.randint(6, size)
+        for i in range(brainSize):
             src = random.random() > 0.5
             dest = random.random() > 0.5
             if src:
@@ -511,7 +512,7 @@ class AntColony:
     def create_world(self):
         for i in range(self.maxAnts):
             self.add_ant(brain=None, startP=self.hivePos)
-        for i in range(10):
+        for i in range(1000):
             self.add_food()
         # make a cross of walls 70 percent of width and height
         startX = int(self.width * 0.15)
@@ -811,9 +812,10 @@ class AntColony:
                 self.ants.remove(ant)
                 #check how much food the ant consumed
                 foodConsumed = ant.FoodConsumed
+                antFitness = ant.fitness
                 antBrain = ant.brain
                 self.totalDeadAnts += 1
-                if foodConsumed > 0:
+                if antFitness > 0:
                     self.BestAnts.append({"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":ant.fitness})
             # topFoodCount = self.BestAnts[0]["food"] if len(self.BestAnts) > 0 else 0
             
@@ -894,7 +896,7 @@ class AntColony:
                 self.pheromoneGrid.SetVal(pher[0], pher[1], pher[2]-.005)
 
         # print('pheromone updated')
-        quadrant = int(self.totalSteps / 1000) % 4
+        quadrant = int(self.totalSteps / 200) % 4
 
         self.ReplenishFood(quadrant, 250)
         # print('food replenished')
@@ -1087,7 +1089,9 @@ class AntColony:
             BV = ant.Color[2]
                             
             #if ant.blockedFront:
-            pygame.draw.rect(screen, (RV,GV,BV), (pxy[0]-.5, pxy[1]-.5, 1, 1))
+            # pygame.draw.rect(screen, (RV,GV,BV), (pxy[0]-.5, pxy[1]-.5, 1, 1))
+            #a single pixel is like this : surface.set_at((x, y), color)
+            screen.set_at((pxy[0], pxy[1]), (RV,GV,BV))
 
             #if ant has food, make a box around ant
             if ant.carryingFood:
@@ -1367,7 +1371,7 @@ class Game:
         pygame.init()
         
         self.maxAnts = 1000
-        tileSize = 8
+        tileSize = 16
                 
         if self.isPi:
             print('Starting display on PI')

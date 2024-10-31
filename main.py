@@ -431,7 +431,9 @@ class AntColony:
         self.height = GridSize[1]
 
         # self.hivePos = [int(GridSize[0]*0.5), int(GridSize[1]*0.5)]
-        self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
+        # self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
+        #the upper right corner is the tricky spot to lets put it there
+        self.hivePos = [int(GridSize[0]*0.8), int(GridSize[1]*0.2)]
         
         self.StartTime = time.time()
         
@@ -494,6 +496,15 @@ class AntColony:
         """add to the food grid in a random spot"""
         foodX = random.randint(0, self.width)
         foodY = random.randint(0, self.height)
+
+        #make sure it doesnt drop on a wall or near the hive
+        worldVal = self.wallGrid.GetVal(foodX, foodY)
+        if worldVal == False or worldVal == []:
+            distToHive = math.sqrt((foodX - self.hivePos[0])**2 + (foodY - self.hivePos[1])**2)
+            if distToHive < 15:
+                return
+
+
         if pos:
             foodX = pos[0]
             foodY = pos[1]
@@ -785,9 +796,9 @@ class AntColony:
                 if ant.carryingFood:
                     ant.carryingFood = False
                     # Reward the ant
-                    ant.life += 10
+                    ant.life += 100
                     ant.fitness += 10
-                    print(f'Ant {ant.antID} returned food to the hive!!')
+                    # print(f'Ant {ant.antID} returned food to the hive!!')
                 
             ant.RunBrain()
             ant.pDirection = float(ant.direction)
@@ -815,7 +826,7 @@ class AntColony:
                 antFitness = ant.fitness
                 antBrain = ant.brain
                 self.totalDeadAnts += 1
-                if antFitness > 0:
+                if antFitness > 2:
                     self.BestAnts.append({"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":ant.fitness})
             # topFoodCount = self.BestAnts[0]["food"] if len(self.BestAnts) > 0 else 0
             
@@ -1370,8 +1381,8 @@ class Game:
 
         pygame.init()
         
-        self.maxAnts = 1000
-        tileSize = 16
+        self.maxAnts = 3000
+        tileSize = 20
                 
         if self.isPi:
             print('Starting display on PI')
@@ -1411,7 +1422,7 @@ class Game:
             for i in range(newAnts):
                 self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
-            numRuns = 10
+            numRuns = 0
             maxFoodFound = 0
             print('Pre-Training Ants')
             for i in range(numRuns):
@@ -1457,11 +1468,24 @@ class Game:
 
             self.antColony.update()
 
+
+            fps = self.clock.get_fps()
+           
+
             if self.drawPaths:
             # self.antColony.drawAnts(self.screen, isPi=self.isPi)
                 self.antColony.drawPaths(self.screen, isPi= self.isPi)
             else:
                 self.antColony.drawAnts(self.screen, isPi=self.isPi)
+                text = f'FPS: {fps}'
+                font = pygame.font.Font(None, 26)
+                text = font.render(text, True, (255, 255, 255))
+                self.screen.blit(text, (self.screenSize[0]-100, 10))
+                #num ants displayed
+                text = f'Ants: {len(self.antColony.ants)}'
+                font = pygame.font.Font(None, 26)
+                text = font.render(text, True, (255, 255, 255))
+                self.screen.blit(text, (self.screenSize[0]-100, 30))
 
 
 
@@ -1479,6 +1503,11 @@ class Game:
                         print(f'FAST TRAINING: {nowPercent}%')
                         percentDone = nowPercent
                     self.antColony.update()
+
+            # if you hit key R, add 1000 random ants
+            if keys[pygame.K_r]:
+                for i in range(10000):
+                    self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
             #if p is pressed, pick the next ant to debug the brain
             if keys[pygame.K_p]:
@@ -1490,7 +1519,7 @@ class Game:
             #add key will add 1000 ants
             if keys[pygame.K_a]:
                 #make max ants 1000
-                self.maxAnts = 1000
+                self.maxAnts += 1000
                 self.antColony.maxAnts = self.maxAnts
                 # for i in range(1000):
                 #     self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
@@ -1498,11 +1527,7 @@ class Game:
 
             ###
             
-            fps = self.clock.get_fps()
-            # text = f'FPS: {fps}'
-            # font = pygame.font.Font(None, 26)
-            # text = font.render(text, True, (255, 255, 255))
-            # self.screen.blit(text, (self.screenSize[0]-100, 10))
+            
 
             if fps < 10:
                 self.maxAnts-=1

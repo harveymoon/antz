@@ -433,7 +433,7 @@ class AntColony:
         # self.hivePos = [int(GridSize[0]*0.5), int(GridSize[1]*0.5)]
         # self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
         #the upper right corner is the tricky spot to lets put it there
-        self.hivePos = [int(GridSize[0]*0.8), int(GridSize[1]*0.2)]
+        self.hivePos = [int(GridSize[0]*0.1), int(GridSize[1]*0.1)]
         
         self.StartTime = time.time()
         
@@ -531,15 +531,15 @@ class AntColony:
         startY = int(self.height * 0.15)
         endY = int(self.height * 0.85)
         
-        # for i in range(startX, endX):
-        #     self.wallGrid.SetVal(i, int(self.height/2), 1)
-        # for i in range(startY, endY):
-        #     self.wallGrid.SetVal(int(self.width/2), i, 1)
+        for i in range(startX, endX):
+            self.wallGrid.SetVal(i, int(self.height/2), 1)
+        for i in range(startY, endY):
+            self.wallGrid.SetVal(int(self.width/2), i, 1)
             
         
         #just make some random walls around
         #width*height * .3
-        numWalls = int(self.width * self.height * .08)
+        numWalls = int(self.width * self.height * .15)
         
             
         # #add some random walls
@@ -597,7 +597,7 @@ class AntColony:
             #     probBest = 1-(bestAntScore / 60) # the higher the score, the more likely we add a best ant
             if bestAntScore < 2:
                 probBest = .9
-            elif bestAntScore < 20:
+            elif bestAntScore < 5:
                 probBest = .5
             else:
                 probBest = 0
@@ -1411,7 +1411,7 @@ class Game:
         print('Creating Ant Colony')
         self.antColony = AntColony(self.screenSize, self.maxAnts, tileSize)
         
-        self.antColony.LoadBestAnts( self.maxAnts )
+        # self.antColony.LoadBestAnts( self.maxAnts )
 
         #first run update 20000 times
         lastPercent = 0

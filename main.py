@@ -13,6 +13,13 @@ import sys
 
 import argparse
 
+# Pi-specific imports
+try:
+    from sugarpie import pisugar
+    PISUGAR_AVAILABLE = True
+except ImportError:
+    PISUGAR_AVAILABLE = False
+
 
 def BrainToColor(brain):
     """Convert a brain to a color"""
@@ -496,6 +503,11 @@ class AntColony:
         self.topFoodFound = 0
         self.totalSteps = 0
         
+        # Battery level tracking for Pi mode
+        self.batteryLevel = 0
+        self.lastBatteryUpdate = 0
+        self.batteryUpdateInterval = 10  # Update every 10 seconds
+        
         self.create_world()
         
                  
@@ -828,6 +840,16 @@ class AntColony:
     def update(self):
         self.totalSteps += 1
         # print("UPDATE SIM")
+        
+        # Update battery level for Pi mode every 10 seconds
+        current_time = time.time()
+        if PISUGAR_AVAILABLE and (current_time - self.lastBatteryUpdate) >= self.batteryUpdateInterval:
+            try:
+                self.batteryLevel = pisugar.get_battery_level()
+                self.lastBatteryUpdate = current_time
+            except Exception as e:
+                print(f"Error getting battery level: {e}")
+                self.batteryLevel = 0
         
         if self.totalSteps % 100 == 0:
             print(f'Current Steps: {self.totalSteps}')
@@ -1488,6 +1510,35 @@ class AntColony:
             screen.blit(text, (30, 10 + i*12))
             pygame.draw.rect(screen, antColor, (10, 10 + i*12, 10, 10))
             
+        # Display battery level for Pi mode (50px line at bottom)
+        if isPi and PISUGAR_AVAILABLE:
+            battery_bar_height = 50
+            battery_bar_y = self.screenSize[1] - battery_bar_height
+            battery_bar_width = self.screenSize[0]
+            
+            # Background bar (dark gray)
+            pygame.draw.rect(screen, (50, 50, 50), (0, battery_bar_y, battery_bar_width, battery_bar_height))
+            
+            # Battery level bar (green to red gradient based on level)
+            if self.batteryLevel > 0:
+                battery_width = int((self.batteryLevel / 100.0) * battery_bar_width)
+                
+                # Color based on battery level
+                if self.batteryLevel > 50:
+                    battery_color = (0, 255, 0)  # Green
+                elif self.batteryLevel > 20:
+                    battery_color = (255, 255, 0)  # Yellow
+                else:
+                    battery_color = (255, 0, 0)  # Red
+                
+                pygame.draw.rect(screen, battery_color, (0, battery_bar_y, battery_width, battery_bar_height))
+                
+                # Battery percentage text
+                font = pygame.font.Font(None, 36)
+                battery_text = f"Battery: {self.batteryLevel}%"
+                text_surface = font.render(battery_text, True, (255, 255, 255))
+                text_rect = text_surface.get_rect(center=(battery_bar_width // 2, battery_bar_y + battery_bar_height // 2))
+                screen.blit(text_surface, text_rect)
         
     def saveData(self):
         

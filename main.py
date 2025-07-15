@@ -1084,9 +1084,15 @@ class AntColony:
                         data = json.loads(data)
                         bestAnts = data["BestAnts"]
                         bestAntsFound.extend(bestAnts)
+        # Handle missing fitness keys in old data files
+        for ant in bestAntsFound:
+            if "fitness" not in ant:
+                # Calculate fitness from food for old data files
+                ant["fitness"] = ant["food"] * 10  # Basic conversion from food to fitness
+        
         #sort the best ants
         # bestAntsFound = sorted(bestAntsFound, key=lambda x: x["food"], reverse=True)
-        bestAntsFound = sorted(bestAntsFound, key=lambda x: x["fitness"], reverse=True)
+        bestAntsFound = sorted(bestAntsFound, key=lambda x: x.get("fitness", x["food"] * 10), reverse=True)
         #filter and make sure unique ant brains only
         # bestAntsFound = [dict(t) for t in {tuple(d.items()) for d in bestAntsFound}]
         brainList = []
@@ -1102,7 +1108,7 @@ class AntColony:
         if len(bestAntsFound) > 100:
             numTopAnts = min(500, len(bestAntsFound))
             bestAntsFound = bestAntsFound[:numTopAnts] #only keep the top 500 ants
-            print(f"Best Ant Range: {bestAntsFound[0]['fitness']} - {bestAntsFound[-1]['fitness']}")
+            print(f"Best Ant Range: {bestAntsFound[0].get('fitness', 'N/A')} - {bestAntsFound[-1].get('fitness', 'N/A')}")
             
             random.shuffle(bestAntsFound)
             #add these ants to the game

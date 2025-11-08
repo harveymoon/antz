@@ -1591,8 +1591,8 @@ class AntColony:
                         ring_intensity = max(ring_intensity, 50)  # Keep minimum visibility
                         pygame.draw.circle(screen, (0, ring_intensity, 0), (int(cx), int(cy)), ring_radius, 1)
                 
-                # Add a small text indicator for high food counts
-                if food_count > 5:
+                # Add a small text indicator for high food counts (only if not Pi mode)
+                if food_count > 5 and not isPi:
                     font = pygame.font.Font(None, 12)
                     text = font.render(str(food_count), True, (255, 255, 255))
                     text_rect = text.get_rect(center=(int(cx), int(cy)))
@@ -1892,6 +1892,12 @@ class AntColony:
         hive_screen_pos = self.WorldToScreen(self.hivePos)
         hive_x = int(hive_screen_pos[0])
         hive_y = int(hive_screen_pos[1])
+        
+        if isPi:
+            # Simple circle for Pi mode - lightweight rendering
+            pygame.draw.circle(screen, (255, 215, 0), (hive_x, hive_y), 15, 3)
+            pygame.draw.circle(screen, (255, 255, 0), (hive_x, hive_y), 8, 2)
+            return
         
         # Get current time for animation
         current_time = time.time()

@@ -565,7 +565,6 @@ class WorldGrid:
 class AntColony:
     def __init__(self, _screenSize, _maxAnts, _tileSize):
         self.maxAnts = _maxAnts
-        self.maxFood = 2000  # Maximum food allowed on the map
         self.ants = []
         #hive pos is 80percent in the corner right
         self.screenSize = _screenSize
@@ -581,6 +580,16 @@ class AntColony:
         self.foodPheromoneGrid = WorldGrid(GridSize[0], GridSize[1])  # Dropped by ants carrying food (paths to food)
         self.width = GridSize[0]
         self.height = GridSize[1]
+        
+        # Calculate field scale factor for food quantities
+        # Base reference: 90x90 grid = 8100 tiles (typical for 1000x1000 screen with 11px tiles)
+        self.fieldArea = self.width * self.height
+        self.fieldScaleFactor = self.fieldArea / 8100.0
+        
+        # Scale maxFood based on field size
+        self.maxFood = int(2000 * self.fieldScaleFactor)
+        self.maxFood = max(100, self.maxFood)  # Minimum 100 food
+        print(f'Field size: {self.width}x{self.height} = {self.fieldArea} tiles, scale factor: {self.fieldScaleFactor:.2f}, maxFood: {self.maxFood}')
 
         # self.hivePos = [int(GridSize[0]*0.5), int(GridSize[1]*0.5)]
         self.hivePos = [random.randint(0, self.width-1), random.randint(0, self.height-1)]
@@ -777,7 +786,7 @@ class AntColony:
         while len(self.ants) < self.maxAnts:
             whileCount += 1
             if whileCount > 1000:
-                print("Stuck in while loop")
+                print("Stuck in while loop during repopulate, breaking out")
                 break
             
             # ant = Ant()
@@ -880,7 +889,7 @@ class AntColony:
             # print(f'Current Food: {currentFood} Ammt: {ammt}')
             whileCount += 1
             if whileCount > 100:
-                print("Stuck in while loop")
+                print("Stuck in while loop during food replenish, breaking out")
                 #PICK A NEW QUADRANT
                 quadrant = random.randint(0, 3)
                 break
@@ -1328,15 +1337,20 @@ class AntColony:
 
         # print('pheromone updated')
         quadrant = int(self.totalSteps / 200) % 4
+        # Scale food replenishment amounts based on field size
+        baseSmall = max(1, int(100 * self.fieldScaleFactor))
+        baseLarge = max(10, int(800 * self.fieldScaleFactor))
+        baseCluster = max(1, int(25 * self.fieldScaleFactor))
+        
         # Add more food clusters in all quadrants for better distribution
-        self.ReplenishFood((quadrant+1)% 4, 100)  # Increased from 50
-        self.ReplenishFood((quadrant+2)% 4, 100)  # Increased from 50
-        self.ReplenishFood((quadrant+3)% 4, 100)  # Increased from 50
-        self.ReplenishFood(quadrant, 800)         # Increased from 250
+        self.ReplenishFood((quadrant+1)% 4, baseSmall)
+        self.ReplenishFood((quadrant+2)% 4, baseSmall)
+        self.ReplenishFood((quadrant+3)% 4, baseSmall)
+        self.ReplenishFood(quadrant, baseLarge)
         
         # Add additional smaller clusters in all quadrants every step
         for q in range(4):
-            self.ReplenishFood(q, 25)  # Small clusters in all quadrants
+            self.ReplenishFood(q, baseCluster)
         # print('food replenished')
 
         repop_result = self.Repopulate()
@@ -1859,36 +1873,6 @@ class AntColony:
                 text = font.render(textV, True, color)
                 screen.blit(text, (30, 10 + i*12))
                 pygame.draw.rect(screen, antColor, (10, 10 + i*12, 10, 10))
-            
-        # Display battery level for Pi mode (50px line at bottom)
-        if isPi and PISUGAR_AVAILABLE:
-            battery_bar_height = 50
-            battery_bar_y = self.screenSize[1] - battery_bar_height
-            battery_bar_width = self.screenSize[0]
-            
-            # Background bar (dark gray)
-            pygame.draw.rect(screen, (50, 50, 50), (0, battery_bar_y, battery_bar_width, battery_bar_height))
-            
-            # Battery level bar (green to red gradient based on level)
-            if self.batteryLevel > 0:
-                battery_width = int((self.batteryLevel / 100.0) * battery_bar_width)
-                
-                # Color based on battery level
-                if self.batteryLevel > 50:
-                    battery_color = (0, 255, 0)  # Green
-                elif self.batteryLevel > 20:
-                    battery_color = (255, 255, 0)  # Yellow
-                else:
-                    battery_color = (255, 0, 0)  # Red
-                
-                pygame.draw.rect(screen, battery_color, (0, battery_bar_y, battery_width, battery_bar_height))
-                
-                # Battery percentage text
-                font = pygame.font.Font(None, 36)
-                battery_text = f"Battery: {self.batteryLevel}%"
-                text_surface = font.render(battery_text, True, (255, 255, 255))
-                text_rect = text_surface.get_rect(center=(battery_bar_width // 2, battery_bar_y + battery_bar_height // 2))
-                screen.blit(text_surface, text_rect)
         
     def drawHive(self, screen, isPi=False):
         """Draw a cool spinning hive visualization"""
@@ -2145,8 +2129,27 @@ class Game:
             elif self.renderSurface is not self.screen:
                 # Non-Pi mode with separate render surface (shouldn't happen normally)
                 self.screen.blit(self.renderSurface, (0, 0))
-
-
+            
+            # Draw battery indicator directly on screen (not affected by scaling)
+            # Minimal 20px bar on bottom edge, no text
+            if self.isPi and PISUGAR_AVAILABLE:
+                battery_bar_height = 20
+                battery_bar_y = self.screenSize[1] - battery_bar_height
+                battery_bar_width = self.screenSize[0]
+                battery_level = self.antColony.batteryLevel
+                
+                if battery_level > 0:
+                    battery_width = int((battery_level / 100.0) * battery_bar_width)
+                    
+                    # Color based on battery level
+                    if battery_level > 50:
+                        battery_color = (0, 255, 0)  # Green
+                    elif battery_level > 20:
+                        battery_color = (255, 255, 0)  # Yellow
+                    else:
+                        battery_color = (255, 0, 0)  # Red
+                    
+                    pygame.draw.rect(self.screen, battery_color, (0, battery_bar_y, battery_width, battery_bar_height))
 
             # KEY PRESSES
             keys = pygame.key.get_pressed()

@@ -67,6 +67,15 @@ def BrainToColor(brain):
     # return [RV, GV, BV]
 
 class Ant:
+    # Pre-computed trig values for 4 cardinal directions (front, left, right, back)
+    # Keys are angle offsets, values are (cos, sin) tuples
+    _TRIG_CACHE = {
+        0.0: (1.0, 0.0),                    # Front
+        -math.pi/2: (0.0, -1.0),            # Left
+        math.pi/2: (0.0, 1.0),              # Right  
+        math.pi: (-1.0, 0.0),               # Back
+    }
+    
     def __init__(self, colony):
         self.colony = colony  # Add this line to store a reference to the colony
 
@@ -306,9 +315,24 @@ class Ant:
     def _sense_line(self, grid, steps=3, step=1.0, angle=0.0):
         """Sense pheromone values along a line in a given direction"""
         acc = 0.0
+        
+        # Use cached trig for cardinal directions, compute once for others
+        if angle in Ant._TRIG_CACHE:
+            # Rotate cached unit vector by ant's direction
+            cached_cos, cached_sin = Ant._TRIG_CACHE[angle]
+            dir_cos = math.cos(self.direction)
+            dir_sin = math.sin(self.direction)
+            # Rotation formula: (x', y') = (x*cos - y*sin, x*sin + y*cos)
+            dx = cached_cos * dir_cos - cached_sin * dir_sin
+            dy = cached_cos * dir_sin + cached_sin * dir_cos
+        else:
+            # Fallback for non-cardinal angles
+            dx = math.cos(self.direction + angle)
+            dy = math.sin(self.direction + angle)
+        
         for i in range(1, steps+1):
-            ax = int(self.x + math.cos(self.direction + angle) * (i*step))
-            ay = int(self.y + math.sin(self.direction + angle) * (i*step))
+            ax = int(self.x + dx * (i*step))
+            ay = int(self.y + dy * (i*step))
             v = grid.GetVal(ax, ay)
             if v not in ([], False, None):
                 acc += v
@@ -598,7 +622,13 @@ class AntColony:
         # Scale maxFood based on field size
         self.maxFood = int(2000 * self.fieldScaleFactor)
         self.maxFood = max(100, self.maxFood)  # Minimum 100 food
-        print(f'Field size: {self.width}x{self.height} = {self.fieldArea} tiles, scale factor: {self.fieldScaleFactor:.2f}, maxFood: {self.maxFood}')
+        
+        # Food search radius scales with grid size - smaller grids use smaller radius
+        # Base: radius 10 for 90x90 grid, scale down for smaller grids
+        minDimension = min(self.width, self.height)
+        # self.foodSearchRadius = max(3, min(10, minDimension // 9))
+        self.foodSearchRadius = 10  # Keep it constant for now
+        print(f'Field size: {self.width}x{self.height} = {self.fieldArea} tiles, scale factor: {self.fieldScaleFactor:.2f}, maxFood: {self.maxFood}, searchRadius: {self.foodSearchRadius}')
 
         # self.hivePos = [int(GridSize[0]*0.5), int(GridSize[1]*0.5)]
         self.hivePos = [random.randint(0, self.width-1), random.randint(0, self.height-1)]
@@ -1130,7 +1160,8 @@ class AntColony:
                     closestFood = [aX, aY]
                 else:
                     # Search in expanding square rings around the ant
-                    for radius in range(1, 10):
+                    # Use dynamic radius based on grid size
+                    for radius in range(1, self.foodSearchRadius):
                         found = False
                         
                         # Search the perimeter of the current square
@@ -1844,9 +1875,12 @@ class AntColony:
         # Draw the hive position with a cool spinning shape (draw last to avoid overlap)
         self.drawHive(screen, isPi)
 
-        # Check mouse position to determine if stats should be shown
-        mouse_pos = pygame.mouse.get_pos()
-        show_stats = mouse_pos[1] <= 20  # Show stats if mouse is within 20px of top
+        # Check mouse position to determine if stats should be shown (skip in Pi mode)
+        if not isPi:
+            mouse_pos = pygame.mouse.get_pos()
+            show_stats = mouse_pos[1] <= 20  # Show stats if mouse is within 20px of top
+        else:
+            show_stats = False
 
         if show_stats:
             #show some stats on a box in the left top corner
@@ -2236,11 +2270,11 @@ class Game:
             if self.isPi:
                 # Pi mode: target lower FPS, be more aggressive with scaling
                 if fps < 3:
-                    self.maxAnts -= 5
-                    if self.maxAnts < 5:
-                        self.maxAnts = 5
+                    self.maxAnts -= 1
+                    if self.maxAnts < 10:
+                        self.maxAnts = 10
                 elif fps > 8:
-                    self.maxAnts += 5
+                    self.maxAnts += 1
                     if self.maxAnts > 200:
                         self.maxAnts = 200
                 self.antColony.maxAnts = self.maxAnts

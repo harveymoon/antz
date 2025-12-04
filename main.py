@@ -1233,7 +1233,7 @@ class AntColony:
             antClosestFood = ant.ClossestFood
             if antClosestFood != [-1,-1]:
                 distToFood = math.sqrt((ant.x - antClosestFood[0])**2 + (ant.y - antClosestFood[1])**2)
-                if distToFood < 1: #give a little leeway
+                if distToFood < 1.5: #increased from 1 to handle ant at edge of cell
                     if ant.carryingFood == False: #if the ant is not carrying food force ants to return home to keep eating
 
                         # Use DecrementVal instead of RemoveVal to support food stacking

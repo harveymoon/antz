@@ -2202,21 +2202,29 @@ class Game:
 
             ###
             
-            
-
-            if fps < 2:
-                self.maxAnts-=1
-                if self.maxAnts < 100:
-                    self.maxAnts = 100
-                #also change the antcolonys max ants
+            # Adaptive ant count based on FPS
+            if self.isPi:
+                # Pi mode: target lower FPS, be more aggressive with scaling
+                if fps < 3:
+                    self.maxAnts -= 5
+                    if self.maxAnts < 5:
+                        self.maxAnts = 5
+                elif fps > 8:
+                    self.maxAnts += 5
+                    if self.maxAnts > 200:
+                        self.maxAnts = 200
                 self.antColony.maxAnts = self.maxAnts
-            elif fps > 10:
-                self.maxAnts+=1
-                self.antColony.maxAnts = self.maxAnts
-                
-            # if self.maxAnts < 300:
-            #     self.maxAnts = 300
-            #     self.antColony.maxAnts = self.maxAnts
+            else:
+                # Desktop mode
+                if fps < 2:
+                    self.maxAnts -= 1
+                    print(f'Reducing max ants to {self.maxAnts} for performance')
+                    if self.maxAnts < 100:
+                        self.maxAnts = 100
+                    self.antColony.maxAnts = self.maxAnts
+                elif fps > 10:
+                    self.maxAnts += 1
+                    self.antColony.maxAnts = self.maxAnts
 
             pygame.display.flip()
             # self.clock.tick(120)

@@ -2131,7 +2131,8 @@ class Game:
             if not self.isPi:
                 for i in range(5):
                     self.antColony.update()
-
+            else:
+                self.antColony.update()
 
             fps = self.clock.get_fps()
            

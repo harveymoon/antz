@@ -1994,6 +1994,7 @@ class Game:
         #add debug mode
         parser.add_argument('--debug', action='store_true', help='Debug mode')
         parser.add_argument('--scale', type=int, default=2, help='Pixel scale factor for Pi mode (1=full res, 2=half res, etc.)')
+        parser.add_argument('--load', action='store_true', help='Load best ants from saved data files')
         args = parser.parse_args()
         if args.pi:
             self.isPi = True
@@ -2067,7 +2068,11 @@ class Game:
         # Set path mode on colony if drawPaths is enabled
         self.antColony.pathMode = self.drawPaths
         
-        # self.antColony.LoadBestAnts( self.maxAnts )
+        # Only load best ants if --load flag is set
+        if args.load:
+            self.antColony.LoadBestAnts( self.maxAnts )
+        else:
+            print('Starting fresh (use --load to load saved ants)')
 
         #first run update 20000 times
         lastPercent = 0

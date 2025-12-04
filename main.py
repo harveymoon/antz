@@ -2127,8 +2127,10 @@ class Game:
                     running = False
 
             #run 5 times between each draw
-            for i in range(5):
-                self.antColony.update()
+            #not in pi mode
+            if not self.isPi:
+                for i in range(5):
+                    self.antColony.update()
 
 
             fps = self.clock.get_fps()

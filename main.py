@@ -2111,15 +2111,6 @@ class Game:
                 self.antColony.drawPaths(self.renderSurface, isPi= self.isPi)
             else:
                 self.antColony.drawAnts(self.renderSurface, isPi=self.isPi)
-                text = f'FPS: {fps}'
-                font = pygame.font.Font(None, 26)
-                text = font.render(text, True, (255, 255, 255))
-                self.renderSurface.blit(text, (self.renderSize[0]-100, 10))
-                #num ants displayed
-                text = f'Ants: {len(self.antColony.ants)}'
-                font = pygame.font.Font(None, 26)
-                text = font.render(text, True, (255, 255, 255))
-                self.renderSurface.blit(text, (self.renderSize[0]-100, 30))
             
             # Scale up the render surface to the screen if using pixel scaling
             if self.isPi and self.pixelScale > 1:
@@ -2129,6 +2120,14 @@ class Game:
             elif self.renderSurface is not self.screen:
                 # Non-Pi mode with separate render surface (shouldn't happen normally)
                 self.screen.blit(self.renderSurface, (0, 0))
+            
+            # Draw FPS and Ants count directly on screen (not affected by scaling)
+            if not self.drawPaths:
+                font = pygame.font.Font(None, 26)
+                fps_text = font.render(f'FPS: {fps:.1f}', True, (255, 255, 255))
+                self.screen.blit(fps_text, (self.screenSize[0]-100, 10))
+                ants_text = font.render(f'Ants: {len(self.antColony.ants)}', True, (255, 255, 255))
+                self.screen.blit(ants_text, (self.screenSize[0]-100, 30))
             
             # Draw battery indicator directly on screen (not affected by scaling)
             # Minimal 20px bar on bottom edge, no text

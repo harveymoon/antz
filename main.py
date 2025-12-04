@@ -481,12 +481,16 @@ class Ant:
 class WorldGrid:
     def __init__(self, width, height):
         """ a grid to hold stuff like food, walls, etc """
+        self.width = width
+        self.height = height
         self.grid = []
         for i in range(width):
             row = []
             for j in range(height):
                 row.append([])
             self.grid.append(row)
+        # Track active cells for O(1) listing instead of O(width*height)
+        self.active_cells = set()
         return
     
     def RemoveVal(self, x, y):
@@ -499,6 +503,7 @@ class WorldGrid:
         if self.grid[x][y] == []:
             return False
         self.grid[x][y] = []
+        self.active_cells.discard((x, y))
         return True
     
     def DecrementVal(self, x, y, amount=1):
@@ -515,6 +520,7 @@ class WorldGrid:
         new_val = current_val - amount
         if new_val <= 0:
             self.grid[x][y] = []
+            self.active_cells.discard((x, y))
             return True
         else:
             self.grid[x][y] = new_val
@@ -532,6 +538,7 @@ class WorldGrid:
             current_val = 0
             
         self.grid[x][y] = current_val + amount
+        self.active_cells.add((x, y))
     
     def SetVal(self, x, y, val):
         if x < 0 or x >= len(self.grid):
@@ -539,6 +546,11 @@ class WorldGrid:
         if y < 0 or y >= len(self.grid[x]):
             return
         self.grid[x][y] = val
+        # Track active cells
+        if val and val != [] and val != 0:
+            self.active_cells.add((x, y))
+        else:
+            self.active_cells.discard((x, y))
         return
 
     def GetVal(self, x, y):
@@ -552,15 +564,12 @@ class WorldGrid:
         for i in range(len(self.grid)):
             for j in range(len(self.grid[i])):
                 self.grid[i][j] = []
+        self.active_cells.clear()
         return
     
     def listActive(self):
-        active = []
-        for i in range(len(self.grid)):
-            for j in range(len(self.grid[i])):
-                if self.grid[i][j] != []:
-                    active.append([i, j, self.grid[i][j]])
-        return active
+        """ Return list of active cells - O(active_count) instead of O(width*height) """
+        return [[x, y, self.grid[x][y]] for x, y in self.active_cells]
 
 class AntColony:
     def __init__(self, _screenSize, _maxAnts, _tileSize):
@@ -622,6 +631,9 @@ class AntColony:
         self.batteryLevel = 0
         self.lastBatteryUpdate = 0
         self.batteryUpdateInterval = 10  # Update every 10 seconds
+        
+        # Path mode flag - only store ant history when enabled
+        self.pathMode = False
         
         self.create_world()
         
@@ -1105,41 +1117,43 @@ class AntColony:
             #         closest = dist
             #         if dist < 10:
             #             closestFood = food
-                        
-            # Proper spiral search pattern - search in expanding squares
-            aX = int(ant.x)
-            aY = int(ant.y)
             
-            # First check the ant's current position
-            current_food = self.foodGrid.GetVal(aX, aY)
-            if current_food != [] and current_food > 0:
-                closestFood = [aX, aY]
-            else:
-                # Search in expanding square rings around the ant
-                for radius in range(1, 10):
-                    found = False
-                    
-                    # Search the perimeter of the current square
-                    for dx in range(-radius, radius + 1):
-                        for dy in range(-radius, radius + 1):
-                            # Only check perimeter positions (not interior)
-                            if abs(dx) == radius or abs(dy) == radius:
-                                checkX = aX + dx
-                                checkY = aY + dy
-                                
-                                # Bounds check
-                                if (checkX >= 0 and checkX < self.width and 
-                                    checkY >= 0 and checkY < self.height):
+            # Only search for food if ant is NOT carrying food
+            if not ant.carryingFood:
+                # Proper spiral search pattern - search in expanding squares
+                aX = int(ant.x)
+                aY = int(ant.y)
+                
+                # First check the ant's current position
+                current_food = self.foodGrid.GetVal(aX, aY)
+                if current_food != [] and current_food > 0:
+                    closestFood = [aX, aY]
+                else:
+                    # Search in expanding square rings around the ant
+                    for radius in range(1, 10):
+                        found = False
+                        
+                        # Search the perimeter of the current square
+                        for dx in range(-radius, radius + 1):
+                            for dy in range(-radius, radius + 1):
+                                # Only check perimeter positions (not interior)
+                                if abs(dx) == radius or abs(dy) == radius:
+                                    checkX = aX + dx
+                                    checkY = aY + dy
                                     
-                                    food_val = self.foodGrid.GetVal(checkX, checkY)
-                                    if food_val != [] and food_val > 0:
-                                        closestFood = [checkX, checkY]
-                                        found = True
-                                        break
+                                    # Bounds check
+                                    if (checkX >= 0 and checkX < self.width and 
+                                        checkY >= 0 and checkY < self.height):
+                                        
+                                        food_val = self.foodGrid.GetVal(checkX, checkY)
+                                        if food_val != [] and food_val > 0:
+                                            closestFood = [checkX, checkY]
+                                            found = True
+                                            break
+                            if found:
+                                break
                         if found:
                             break
-                    if found:
-                        break
                       
                       
             if closestFood != [-1,-1]:
@@ -1167,13 +1181,17 @@ class AntColony:
            
            
            
-           # history saving
-            lastknownPos = ant.posHistory[-1] if len(ant.posHistory) > 0 else [0,0]
-     
-            moveDist = math.sqrt((ant.x - lastknownPos[0])**2 + (ant.y - lastknownPos[1])**2)
-        # limited to 1 tile per move to prevent too much history
-            if abs(moveDist) > 1:
-                ant.posHistory.append([ant.x, ant.y])
+           # history saving - only in path mode
+            if self.pathMode:
+                lastknownPos = ant.posHistory[-1] if len(ant.posHistory) > 0 else [0,0]
+         
+                moveDist = math.sqrt((ant.x - lastknownPos[0])**2 + (ant.y - lastknownPos[1])**2)
+                # limited to 1 tile per move to prevent too much history
+                if abs(moveDist) > 1:
+                    ant.posHistory.append([ant.x, ant.y])
+                    # Limit history size to prevent memory bloat
+                    if len(ant.posHistory) > 200:
+                        ant.posHistory = ant.posHistory[-100:]
            ## end history saving
 
             ant.life -= 1
@@ -1316,24 +1334,27 @@ class AntColony:
         
         
         #remove old pheromone cells and decay both types
-
-        # Handle nest pheromones
-        activeNestPhers = self.nestPheromoneGrid.listActive()
-        for pher in activeNestPhers:
-            if pher[2] <= 0:
-                self.nestPheromoneGrid.RemoveVal(pher[0], pher[1])
-            else:
-                #decay the pheromone
-                self.nestPheromoneGrid.SetVal(pher[0], pher[1], pher[2]-.005)
-        
-        # Handle food pheromones  
-        activeFoodPhers = self.foodPheromoneGrid.listActive()
-        for pher in activeFoodPhers:
-            if pher[2] <= 0:
-                self.foodPheromoneGrid.RemoveVal(pher[0], pher[1])
-            else:
-                #decay the pheromone
-                self.foodPheromoneGrid.SetVal(pher[0], pher[1], pher[2]-.005)
+        # Batch pheromone decay every 5 frames for performance
+        if self.totalSteps % 5 == 0:
+            decay_rate = 0.025  # 5x normal rate since we do it every 5 frames
+            
+            # Handle nest pheromones
+            activeNestPhers = self.nestPheromoneGrid.listActive()
+            for pher in activeNestPhers:
+                if pher[2] <= 0:
+                    self.nestPheromoneGrid.RemoveVal(pher[0], pher[1])
+                else:
+                    #decay the pheromone
+                    self.nestPheromoneGrid.SetVal(pher[0], pher[1], pher[2] - decay_rate)
+            
+            # Handle food pheromones  
+            activeFoodPhers = self.foodPheromoneGrid.listActive()
+            for pher in activeFoodPhers:
+                if pher[2] <= 0:
+                    self.foodPheromoneGrid.RemoveVal(pher[0], pher[1])
+                else:
+                    #decay the pheromone
+                    self.foodPheromoneGrid.SetVal(pher[0], pher[1], pher[2] - decay_rate)
 
         # print('pheromone updated')
         quadrant = int(self.totalSteps / 200) % 4
@@ -1882,9 +1903,8 @@ class AntColony:
         hive_y = int(hive_screen_pos[1])
         
         if isPi:
-            # Simple circle for Pi mode - lightweight rendering
-            pygame.draw.circle(screen, (255, 215, 0), (hive_x, hive_y), 15, 3)
-            pygame.draw.circle(screen, (255, 255, 0), (hive_x, hive_y), 8, 2)
+            # Simple thin red circle for Pi mode - minimal rendering
+            pygame.draw.circle(screen, (255, 0, 0), (hive_x, hive_y), 10, 1)
             return
         
         # Get current time for animation
@@ -2043,6 +2063,9 @@ class Game:
         print('Creating Ant Colony')
         # Use renderSize for the ant colony so the grid matches the render resolution
         self.antColony = AntColony(self.renderSize, self.maxAnts, tileSize)
+        
+        # Set path mode on colony if drawPaths is enabled
+        self.antColony.pathMode = self.drawPaths
         
         # self.antColony.LoadBestAnts( self.maxAnts )
 

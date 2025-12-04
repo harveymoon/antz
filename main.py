@@ -1976,20 +1976,28 @@ class Game:
         self.debugMode = False
         
         self.maxAnts = 500
-
+        
+        # Pixel scaling for Pi mode - each logical pixel becomes NxN screen pixels
+        # Set to 1 for normal resolution, 2 for half-res (4 pixels per logical pixel), etc.
+        self.pixelScale = 1  # Default: no scaling
         
         self.screenSize = (1000, 1000)
+        self.renderSize = (1000, 1000)  # Actual rendering resolution (may be smaller for scaled modes)
         #using argparse
         parser = argparse.ArgumentParser(description='Run the ant simulation')
         parser.add_argument('--pi', action='store_true', help='Run on a Raspberry Pi')
         parser.add_argument('--paths', action='store_true', help='Draw the paths of the ants')
         #add debug mode
         parser.add_argument('--debug', action='store_true', help='Debug mode')
+        parser.add_argument('--scale', type=int, default=2, help='Pixel scale factor for Pi mode (1=full res, 2=half res, etc.)')
         args = parser.parse_args()
         if args.pi:
             self.isPi = True
             print('Running on Raspberry Pi')
             self.screenSize = (480, 1920)
+            # Apply pixel scaling for Pi mode
+            self.pixelScale = max(1, args.scale)  # Minimum scale of 1
+            print(f'Pixel scale: {self.pixelScale}x (each logical pixel = {self.pixelScale}x{self.pixelScale} screen pixels)')
 
         if args.paths:
             self.drawPaths = True
@@ -2017,25 +2025,40 @@ class Game:
             os.environ["SDL_VIDEODRIVER"] = "rbcon" # or maybe 'fbcon'
             #set display environment variables
             os.environ["DISPLAY"] = ":0.0"
-            # Set up display
+            # Set up display at full screen resolution
             self.screen = pygame.display.set_mode(self.screenSize, pygame.FULLSCREEN)
+            
+            # Create a smaller render surface for scaled mode
+            # Each logical pixel will be pixelScale x pixelScale screen pixels
+            self.renderSize = (self.screenSize[0] // self.pixelScale, self.screenSize[1] // self.pixelScale)
+            self.renderSurface = pygame.Surface(self.renderSize)
+            print(f'Render size: {self.renderSize} -> scaled to {self.screenSize}')
+            
             # Initialize Pygame
             print('Hiding cursor')
             pygame.mouse.set_visible(False) # Hide cursor here
 
             self.maxAnts = 80
-            tileSize = 25
+            # Adjust tile size for the scaled render resolution
+            # Smaller render surface needs proportionally larger tiles to maintain same grid density
+            tileSize = 25 // self.pixelScale
+            if tileSize < 5:
+                tileSize = 5  # Minimum tile size
+            print(f'Tile size adjusted to: {tileSize}')
         
         else:
             # os.environ["SDL_VIDEO_WINDOW_POS"] = "-1100,0"
             self.screen = pygame.display.set_mode(self.screenSize)
+            self.renderSize = self.screenSize
+            self.renderSurface = self.screen  # No scaling needed, render directly to screen
             
             
         self.clock = pygame.time.Clock()
 
            
         print('Creating Ant Colony')
-        self.antColony = AntColony(self.screenSize, self.maxAnts, tileSize)
+        # Use renderSize for the ant colony so the grid matches the render resolution
+        self.antColony = AntColony(self.renderSize, self.maxAnts, tileSize)
         
         # self.antColony.LoadBestAnts( self.maxAnts )
 
@@ -2101,18 +2124,27 @@ class Game:
 
             if self.drawPaths:
             # self.antColony.drawAnts(self.screen, isPi=self.isPi)
-                self.antColony.drawPaths(self.screen, isPi= self.isPi)
+                self.antColony.drawPaths(self.renderSurface, isPi= self.isPi)
             else:
-                self.antColony.drawAnts(self.screen, isPi=self.isPi)
+                self.antColony.drawAnts(self.renderSurface, isPi=self.isPi)
                 text = f'FPS: {fps}'
                 font = pygame.font.Font(None, 26)
                 text = font.render(text, True, (255, 255, 255))
-                self.screen.blit(text, (self.screenSize[0]-100, 10))
+                self.renderSurface.blit(text, (self.renderSize[0]-100, 10))
                 #num ants displayed
                 text = f'Ants: {len(self.antColony.ants)}'
                 font = pygame.font.Font(None, 26)
                 text = font.render(text, True, (255, 255, 255))
-                self.screen.blit(text, (self.screenSize[0]-100, 30))
+                self.renderSurface.blit(text, (self.renderSize[0]-100, 30))
+            
+            # Scale up the render surface to the screen if using pixel scaling
+            if self.isPi and self.pixelScale > 1:
+                # Use NEAREST neighbor scaling to maintain sharp pixels (no blurring)
+                scaled_surface = pygame.transform.scale(self.renderSurface, self.screenSize)
+                self.screen.blit(scaled_surface, (0, 0))
+            elif self.renderSurface is not self.screen:
+                # Non-Pi mode with separate render surface (shouldn't happen normally)
+                self.screen.blit(self.renderSurface, (0, 0))
 
 
 

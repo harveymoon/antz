@@ -1158,14 +1158,14 @@ class AntColony:
            
            
            
-           ### history saving
-        #     lastknownPos = ant.posHistory[-1] if len(ant.posHistory) > 0 else [0,0]
+           # history saving
+            lastknownPos = ant.posHistory[-1] if len(ant.posHistory) > 0 else [0,0]
      
-        #     moveDist = math.sqrt((ant.x - lastknownPos[0])**2 + (ant.y - lastknownPos[1])**2)
-        # # limited to 1 tile per move to prevent too much history
-        #     if abs(moveDist) > 1:
-        #         ant.posHistory.append([ant.x, ant.y])
-           ### end history saving
+            moveDist = math.sqrt((ant.x - lastknownPos[0])**2 + (ant.y - lastknownPos[1])**2)
+        # limited to 1 tile per move to prevent too much history
+            if abs(moveDist) > 1:
+                ant.posHistory.append([ant.x, ant.y])
+           ## end history saving
 
             ant.life -= 1
 
@@ -1440,6 +1440,8 @@ class AntColony:
         # screen.setAlpha(10)
         # screen.fill((25, 25, 25, 50), special_flags=pygame.BLEND_RGBA_MULT)
         
+        # print("Drawing Paths")
+
         fade = pygame.Surface((self.screenSize[0], self.screenSize[1]))
         fade.fill((25, 25, 25))
         # if isPi:
@@ -1462,8 +1464,10 @@ class AntColony:
         else:
             for ant in self.ants:
                 if len(ant.posHistory) > 1:
+                    # print(f'Ant {ant.antID} has posHistory length: {len(ant.posHistory)}')
                     #ant must have eaten one food
                     if ant.FoodConsumed > 0:
+                        # print(f'Ant {ant.antID} drawing path, food consumed: {ant.FoodConsumed}')
                         for i in range(len(ant.posHistory) - 1):
                             p1 = self.WorldToScreen(ant.posHistory[i])
                             p2 = self.WorldToScreen(ant.posHistory[i + 1])
@@ -2033,7 +2037,7 @@ class Game:
         print('Creating Ant Colony')
         self.antColony = AntColony(self.screenSize, self.maxAnts, tileSize)
         
-        self.antColony.LoadBestAnts( self.maxAnts )
+        # self.antColony.LoadBestAnts( self.maxAnts )
 
         #first run update 20000 times
         lastPercent = 0

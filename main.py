@@ -131,6 +131,19 @@ class Ant:
         
         self.Color = []
         
+        # Cached sensor values - computed once per frame for performance
+        self._cached_nest_pher_front = 0
+        self._cached_nest_pher_left = 0
+        self._cached_nest_pher_right = 0
+        self._cached_nest_pher_back = 0
+        self._cached_food_pher_front = 0
+        self._cached_food_pher_left = 0
+        self._cached_food_pher_right = 0
+        self._cached_food_pher_back = 0
+        self._cached_hive_direction = 0
+        self._cached_hive_distance = 0
+        self._sensors_computed = False  # Flag to track if sensors need recomputing
+        
 
 
     def create_brain(self, size=12):
@@ -156,6 +169,77 @@ class Ant:
         COLOR = BrainToColor(self.brain)
 
         self.Color = COLOR
+    
+    def precompute_sensors(self):
+        """Precompute all sensor values once per frame for performance.
+        This avoids redundant grid lookups and trig calculations during RunBrain()."""
+        
+        # Cache direction trig values once
+        cos_dir = math.cos(self.direction)
+        sin_dir = math.sin(self.direction)
+        
+        # Precompute all 8 pheromone sensors using inline calculations
+        # Front (angle=0): dx=cos_dir, dy=sin_dir
+        self._cached_nest_pher_front = self._sense_line_fast(
+            self.colony.nestPheromoneGrid, cos_dir, sin_dir, steps=3)
+        self._cached_food_pher_front = self._sense_line_fast(
+            self.colony.foodPheromoneGrid, cos_dir, sin_dir, steps=3)
+        
+        # Left (angle=-pi/2): rotate by -90 degrees
+        # dx = cos_dir*0 - sin_dir*(-1) = sin_dir
+        # dy = cos_dir*(-1) + sin_dir*0 = -cos_dir
+        dx_left, dy_left = sin_dir, -cos_dir
+        self._cached_nest_pher_left = self._sense_line_fast(
+            self.colony.nestPheromoneGrid, dx_left, dy_left, steps=3)
+        self._cached_food_pher_left = self._sense_line_fast(
+            self.colony.foodPheromoneGrid, dx_left, dy_left, steps=3)
+        
+        # Right (angle=pi/2): rotate by +90 degrees  
+        # dx = cos_dir*0 - sin_dir*1 = -sin_dir
+        # dy = cos_dir*1 + sin_dir*0 = cos_dir
+        dx_right, dy_right = -sin_dir, cos_dir
+        self._cached_nest_pher_right = self._sense_line_fast(
+            self.colony.nestPheromoneGrid, dx_right, dy_right, steps=3)
+        self._cached_food_pher_right = self._sense_line_fast(
+            self.colony.foodPheromoneGrid, dx_right, dy_right, steps=3)
+        
+        # Back (angle=pi): rotate by 180 degrees
+        # dx = -cos_dir, dy = -sin_dir
+        dx_back, dy_back = -cos_dir, -sin_dir
+        self._cached_nest_pher_back = self._sense_line_fast(
+            self.colony.nestPheromoneGrid, dx_back, dy_back, steps=2)
+        self._cached_food_pher_back = self._sense_line_fast(
+            self.colony.foodPheromoneGrid, dx_back, dy_back, steps=2)
+        
+        # Cache hive direction and distance (also computed multiple times)
+        dx_hive = self.colony.hivePos[0] - self.x
+        dy_hive = self.colony.hivePos[1] - self.y
+        
+        # Hive direction
+        angle_to_hive = math.atan2(dy_hive, dx_hive)
+        relative_angle = angle_to_hive - self.direction
+        # Normalize to [-pi, pi] using modulo (faster than while loops)
+        relative_angle = (relative_angle + math.pi) % (2 * math.pi) - math.pi
+        self._cached_hive_direction = relative_angle / math.pi
+        
+        # Hive distance
+        distance = math.sqrt(dx_hive * dx_hive + dy_hive * dy_hive)
+        max_distance = math.sqrt(self.colony.width**2 + self.colony.height**2)
+        self._cached_hive_distance = 1 - (distance / max_distance)
+        
+        self._sensors_computed = True
+    
+    def _sense_line_fast(self, grid, dx, dy, steps=3, step=1.0):
+        """Fast sensor line sensing with pre-computed direction vectors"""
+        acc = 0.0
+        x, y = self.x, self.y
+        for i in range(1, steps + 1):
+            ax = int(x + dx * (i * step))
+            ay = int(y + dy * (i * step))
+            v = grid.GetVal(ax, ay)
+            if v not in ([], False, None):
+                acc += v
+        return acc / steps
            
     def calculateNavigationFitness(self, currentPos=None):
         """
@@ -340,64 +424,48 @@ class Ant:
         return acc / steps
 
     # Nest pheromone sensors (dropped by ants NOT carrying food - paths to nest)
+    # These now return cached values computed by precompute_sensors()
     def getNestPherFront(self):
         """getNestPherFront() : returns the amount of nest pheromone in front of the ant """
-        return self._sense_line(self.colony.nestPheromoneGrid, steps=3, step=1.0, angle=0.0)
+        return self._cached_nest_pher_front
     
     def getNestPherLeft(self):
         """getNestPherLeft() : returns the amount of nest pheromone to the left of the ant """
-        return self._sense_line(self.colony.nestPheromoneGrid, steps=3, step=1.0, angle=-math.pi/2)
+        return self._cached_nest_pher_left
 
     def getNestPherRight(self):
         """getNestPherRight() : returns the amount of nest pheromone to the right of the ant """
-        return self._sense_line(self.colony.nestPheromoneGrid, steps=3, step=1.0, angle=math.pi/2)
+        return self._cached_nest_pher_right
 
     def getNestPherBack(self):
         """getNestPherBack() : returns the amount of nest pheromone behind the ant """
-        return self._sense_line(self.colony.nestPheromoneGrid, steps=2, step=1.0, angle=math.pi)
+        return self._cached_nest_pher_back
 
     # Food pheromone sensors (dropped by ants carrying food - paths to food)
     def getFoodPherFront(self):
         """getFoodPherFront() : returns the amount of food pheromone in front of the ant """
-        return self._sense_line(self.colony.foodPheromoneGrid, steps=3, step=1.0, angle=0.0)
+        return self._cached_food_pher_front
     
     def getFoodPherLeft(self):
         """getFoodPherLeft() : returns the amount of food pheromone to the left of the ant """
-        return self._sense_line(self.colony.foodPheromoneGrid, steps=3, step=1.0, angle=-math.pi/2)
+        return self._cached_food_pher_left
 
     def getFoodPherRight(self):
         """getFoodPherRight() : returns the amount of food pheromone to the right of the ant """
-        return self._sense_line(self.colony.foodPheromoneGrid, steps=3, step=1.0, angle=math.pi/2)
+        return self._cached_food_pher_right
 
     def getFoodPherBack(self):
         """getFoodPherBack() : returns the amount of food pheromone behind the ant """
-        return self._sense_line(self.colony.foodPheromoneGrid, steps=2, step=1.0, angle=math.pi)
+        return self._cached_food_pher_back
 
     
     def getHiveDirection(self):
         """getHiveDirection() : returns the relative direction to the hive """
-        dx = self.colony.hivePos[0] - self.x
-        dy = self.colony.hivePos[1] - self.y
-        angle_to_hive = math.atan2(dy, dx)
-        relative_angle = angle_to_hive - self.direction
-        # Normalize to range [-pi, pi]
-        while relative_angle > math.pi:
-            relative_angle -= 2 * math.pi
-        while relative_angle < -math.pi:
-            relative_angle += 2 * math.pi
-        # Normalize to [-1, 1]
-        normalized_angle = relative_angle / math.pi
-        return normalized_angle
+        return self._cached_hive_direction
 
     def getHiveDistance(self):
         """getHiveDistance() : returns the normalized inverse distance to the hive """
-        dx = self.colony.hivePos[0] - self.x
-        dy = self.colony.hivePos[1] - self.y
-        distance = math.sqrt(dx**2 + dy**2)
-        max_distance = math.sqrt(self.colony.width**2 + self.colony.height**2)
-        # Invert and normalize the distance so that closer distances yield higher values
-        normalized_distance = 1 - (distance / max_distance)
-        return normalized_distance
+        return self._cached_hive_distance
 
 
     def isCarryingFood(self):
@@ -778,9 +846,37 @@ class AntColony:
         # Path mode flag - only store ant history when enabled
         self.pathMode = False
         
+        # Cache fonts for performance (avoid creating font objects in draw loops)
+        self._font_tiny = None   # Size 12 - for food count labels
+        self._font_small = None  # Size 20 - for debug info
+        self._font_medium = None # Size 26 - for FPS display
+        self._font_mono = None   # Monospace size 12 - for stats
+        
         self.create_world()
         
                  
+    def _get_font(self, size):
+        """Get cached font, lazily initializing if needed"""
+        if size == 12:
+            if self._font_tiny is None:
+                self._font_tiny = pygame.font.Font(None, 12)
+            return self._font_tiny
+        elif size == 20:
+            if self._font_small is None:
+                self._font_small = pygame.font.Font(None, 20)
+            return self._font_small
+        elif size == 26:
+            if self._font_medium is None:
+                self._font_medium = pygame.font.Font(None, 26)
+            return self._font_medium
+        elif size == 'mono':
+            if self._font_mono is None:
+                self._font_mono = pygame.font.SysFont('monospace', 12)
+            return self._font_mono
+        else:
+            # Fallback for unknown sizes
+            return pygame.font.Font(None, size)
+    
     def WorldToScreen(self, apos):
         ax = apos[0]/self.width * self.screenSize[0]
         ay = apos[1]/self.height * self.screenSize[1]
@@ -1225,6 +1321,12 @@ class AntColony:
         # print(f'Number of ants: {len(self.ants)}')
            
         startTime = time.time()
+        
+        # Precompute all sensor values for all ants once per frame
+        # This eliminates redundant grid lookups and trig calculations during RunBrain()
+        for ant in self.ants:
+            ant.precompute_sensors()
+        
         for ant in self.ants:
             # print(f'Ant: {ant.antID}')
             antPos = (int(ant.x), int(ant.y))
@@ -1408,38 +1510,47 @@ class AntColony:
 
         # print('ants updated')
         
-        #remove dead ants
-        for ant in self.ants[:]:
-            if ant.life <= 0: #DEAD ANT
-                #if debugbrain, pick another ant
-                if ant.DebugBrain:
-                    self.FollowNextAnt = True
-                
-                # === DEATH FITNESS CALCULATION ===
-                
-                # If ant died while carrying food, give partial credit for progress
-                if ant.carryingFood and ant.foodPickupPos is not None:
-                    nav_fitness = ant.calculateNavigationFitness()
-                    ant.fitness += nav_fitness  # Can be positive or negative (capped)
-                
-                self.ants.remove(ant)
-                
-                foodConsumed = ant.FoodConsumed  # This is actually "completed trips"
-                antFitness = ant.fitness
-                
-                # Exploration bonus: reward ants that ventured far (but cap it)
-                # Only if they completed at least one trip
-                if foodConsumed > 0:
-                    exploration_bonus = min(50, int(ant.FarthestTraveled * 0.5))
-                    antFitness += exploration_bonus
-                antBrain = ant.brain
-                self.totalDeadAnts += 1
-                if antFitness > 2:
-                    self.BestAnts.append({"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":antFitness})
-                    # Update top fitness for tracking purposes (not stagnation)
-                    if antFitness > self.lastTopFitness:
-                        self.lastTopFitness = antFitness
-            # topFoodCount = self.BestAnts[0]["food"] if len(self.BestAnts) > 0 else 0
+        # Remove dead ants using list comprehension (O(n) instead of O(n²))
+        # First, separate living and dead ants in a single pass
+        living_ants = []
+        dead_ants = []
+        for ant in self.ants:
+            if ant.life <= 0:
+                dead_ants.append(ant)
+            else:
+                living_ants.append(ant)
+        
+        # Replace ants list with living ants only
+        self.ants = living_ants
+        
+        # Process dead ants
+        for ant in dead_ants:
+            # If debugbrain, pick another ant
+            if ant.DebugBrain:
+                self.FollowNextAnt = True
+            
+            # === DEATH FITNESS CALCULATION ===
+            
+            # If ant died while carrying food, give partial credit for progress
+            if ant.carryingFood and ant.foodPickupPos is not None:
+                nav_fitness = ant.calculateNavigationFitness()
+                ant.fitness += nav_fitness  # Can be positive or negative (capped)
+            
+            foodConsumed = ant.FoodConsumed  # This is actually "completed trips"
+            antFitness = ant.fitness
+            
+            # Exploration bonus: reward ants that ventured far (but cap it)
+            # Only if they completed at least one trip
+            if foodConsumed > 0:
+                exploration_bonus = min(50, int(ant.FarthestTraveled * 0.5))
+                antFitness += exploration_bonus
+            antBrain = ant.brain
+            self.totalDeadAnts += 1
+            if antFitness > 2:
+                self.BestAnts.append({"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":antFitness})
+                # Update top fitness for tracking purposes (not stagnation)
+                if antFitness > self.lastTopFitness:
+                    self.lastTopFitness = antFitness
         
         
         #remove old pheromone cells and decay both types
@@ -1745,7 +1856,7 @@ class AntColony:
                 
                 # Add a small text indicator for high food counts (only if not Pi mode)
                 if food_count > 5 and not isPi:
-                    font = pygame.font.Font(None, 12)
+                    font = self._get_font(12)
                     text = font.render(str(food_count), True, (255, 255, 255))
                     text_rect = text.get_rect(center=(int(cx), int(cy)))
                     screen.blit(text, text_rect)
@@ -1811,7 +1922,7 @@ class AntColony:
                 
                 #show the ant info next to the ant
                 #direction
-                font = pygame.font.Font(None, 20)
+                font = self._get_font(20)
                 text = font.render(f'DIR:{ant.direction}', True, (255,255,255))
                 screen.blit(text, (pxy[0]+10, pxy[1]))
                 #life
@@ -1858,10 +1969,10 @@ class AntColony:
                 
                 offsetX = self.screenSize[0]
                 
+                font = self._get_font(20)  # Cache font outside loop
                 for i in range(len(ant.InputSources)):
                     pygame.draw.circle(screen, (255, 255, 255), (offsetX-column_3, self.screenSize[1]-250 + i*20), 5)
                     #put the value of the input in the circle
-                    font = pygame.font.Font(None, 20)
                     text = font.render(f'{ant.InputSources[i]()}', True, (255,255,255))
                     screen.blit(text, (offsetX-column_3, self.screenSize[1]-250 + i*20))
                     
@@ -1869,7 +1980,6 @@ class AntColony:
                 for i in range(len(ant.neurons)):
                     pygame.draw.circle(screen, (255, 255, 255), (offsetX-column_2, self.screenSize[1]-250 + i*20), 5)
                     #put the value of the neuron in the circle
-                    font = pygame.font.Font(None, 20)
                     text = font.render(f'{ant.neurons[i]}', True, (255,255,255))
                     screen.blit(text, (offsetX-column_2, self.screenSize[1]-250 + i*20))
                     
@@ -1877,7 +1987,6 @@ class AntColony:
                 for i in range(len(ant.OutputDestinations)):
                     pygame.draw.circle(screen, (255, 255, 255), (offsetX-column_1, self.screenSize[1]-250 + i*20), 5)
                     #put the value of the output in the circle
-                    font = pygame.font.Font(None, 20)
                     text = font.render(f'{ant.OutputDestinations[i]}', True, (255,255,255))
                     screen.blit(text, (offsetX-column_1, self.screenSize[1]-250 + i*20))
                     
@@ -2007,9 +2116,8 @@ class AntColony:
                 #clip the text to 50 characters
                 textV = textV[:80]
                 
-                # font = pygame.font.Font(None, 20)
-                #monospace font
-                font = pygame.font.SysFont('monospace', 12)
+                # Use cached monospace font
+                font = self._get_font('mono')
                 # text = font.render(textV, True, (255,255,255))
                 #set color based on the type of ant
                 antType = ant["antID"][1]
@@ -2279,7 +2387,7 @@ class Game:
             
             # Draw FPS and Ants count directly on screen (not affected by scaling)
             if not self.drawPaths:
-                font = pygame.font.Font(None, 26)
+                font = self.antColony._get_font(26)
                 fps_text = font.render(f'FPS: {fps:.1f}', True, (255, 255, 255))
                 self.screen.blit(fps_text, (self.screenSize[0]-100, 10))
                 ants_text = font.render(f'Ants: {len(self.antColony.ants)}', True, (255, 255, 255))

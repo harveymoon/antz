@@ -158,33 +158,34 @@ class Ant:
         self.Color = COLOR
            
     def calculateNavigationFitness(self, currentPos=None):
-        """Calculate navigation fitness based on food pickup location and current position"""
+        """
+        Calculate fitness based on actual PROGRESS toward hive.
+        Returns positive value for progress toward hive, negative for moving away.
+        This rewards efficient navigation, not circuitous paths.
+        """
         if self.foodPickupPos is None:
             return 0
         
-        # Use current ant position if not provided
         if currentPos is None:
             currentPos = [self.x, self.y]
         
-        # Calculate distances
-        pickup_to_nest_dist = math.sqrt((self.foodPickupPos[0] - self.colony.hivePos[0])**2 + 
-                                      (self.foodPickupPos[1] - self.colony.hivePos[1])**2)
-        current_to_nest_dist = math.sqrt((currentPos[0] - self.colony.hivePos[0])**2 + 
-                                       (currentPos[1] - self.colony.hivePos[1])**2)
+        # Distance from where food was picked up to the hive
+        pickup_to_hive = math.sqrt((self.foodPickupPos[0] - self.colony.hivePos[0])**2 + 
+                                   (self.foodPickupPos[1] - self.colony.hivePos[1])**2)
         
-        pickup_to_current_dist = math.sqrt((self.foodPickupPos[0] - currentPos[0])**2 + 
-                                         (self.foodPickupPos[1] - currentPos[1])**2)
-
-        # Base fitness: 10 points per grid tile from pickup to nest
-        # base_fitness = int(pickup_to_nest_dist * 10)
+        # Distance from current position to the hive
+        current_to_hive = math.sqrt((currentPos[0] - self.colony.hivePos[0])**2 + 
+                                    (currentPos[1] - self.colony.hivePos[1])**2)
         
-        # Bonus/penalty based on progress toward nest
-        if current_to_nest_dist < pickup_to_nest_dist:
-            # Ant got closer to nest - keep full fitness
-            return int(pickup_to_current_dist * 10)
+        # Progress = how much CLOSER to hive the ant got (positive = moved toward hive)
+        progress = pickup_to_hive - current_to_hive
+        
+        # 5 points per tile of actual progress toward hive
+        # Cap penalty to prevent catastrophic fitness loss for wandering
+        if progress >= 0:
+            return int(progress * 5)
         else:
-            # Ant is farther from nest than when it picked up food - subtract fitness
-            return -int(pickup_to_current_dist * 10)
+            return max(-100, int(progress * 5))  # Cap penalty at -100
     
     def closeToFood(self):
         """closeToFood() : returns true if the ant is close to food"""
@@ -444,22 +445,22 @@ class Ant:
             return 1 - dist / 5
         return 0
     
-    def move(self,ammount):
+    def move(self,amount):
         """move() : move the ant in the direction it is facing """
-        #limit ammount to 5
-        if ammount > .8:
-            ammount = .8
-        if ammount < -.8:
-            ammount = -.8
+        #limit amount to 5
+        if amount > .8:
+            amount = .8
+        if amount < -.8:
+            amount = -.8
         
         
-        ammount*=.5
+        amount*=.5
        
        # ant has no access to the grid, so it cannot check for walls
-        # futurePox = [self.x + math.cos(self.direction) * ammount, self.y + math.sin(self.direction) * ammount]
+        # futurePox = [self.x + math.cos(self.direction) * amount, self.y + math.sin(self.direction) * amount]
         # curWall = self.wallGrid.GetVal(int(futurePox[0]), int(futurePox[1])
         # if curWall != False:
-        #     ammount = 0
+        #     amount = 0
         #     self.life -= 1# penalize the ant for hitting a wall
         #     #damage the wall at the front of the ant by .1
         #     self.wallGrid.SetVal(int(futurePox[0]), int(futurePox[1]), curWall - .1)
@@ -468,17 +469,17 @@ class Ant:
             print(self.blockedFront)
                   
         if self.blockedFront!= False:
-            ammount = 0
+            amount = 0
             self.life -= 1# penalize the ant for hitting a wall
             #damage the wall at the front of the ant by .1
             self.turn((random.random() - 0.5) * 0.8)  # ~±0.4 rad
             return  # bail early to avoid adding the forward step
     
         if self.DebugBrain:
-            print(f'moving ammount: {ammount}')
+            print(f'moving amount: {amount}')
     
-        addX = math.cos(self.direction) * ammount
-        addY = math.sin(self.direction) * ammount
+        addX = math.cos(self.direction) * amount
+        addY = math.sin(self.direction) * amount
         if self.DebugBrain:
             print(f'addX: {addX}, addY: {addY}')
         
@@ -494,12 +495,121 @@ class Ant:
     def turn(self, direction):
         """turn() : turn the ant in a direction """
         self.direction += direction
-        #limit the direction to 0-2pi
-        if self.direction > 2*math.pi:
-            self.direction -= 2*math.pi
-        if self.direction < -2*math.pi:
-            self.direction += 2*math.pi
-        # self.energy -= 1
+        # Normalize direction to [0, 2π) using modulo
+        self.direction = self.direction % (2 * math.pi)
+
+
+class SpatialFoodIndex:
+    """Spatial hash for O(1) nearest food lookup instead of O(r²) spiral search"""
+    
+    def __init__(self, width, height, bucket_size=10):
+        self.bucket_size = bucket_size
+        self.width = width
+        self.height = height
+        self.buckets_x = (width + bucket_size - 1) // bucket_size
+        self.buckets_y = (height + bucket_size - 1) // bucket_size
+        # Each bucket is a set of (x, y) food positions
+        self.buckets = [[set() for _ in range(self.buckets_y)] for _ in range(self.buckets_x)]
+    
+    def _get_bucket(self, x, y):
+        """Get bucket indices for a world position"""
+        bx = max(0, min(x // self.bucket_size, self.buckets_x - 1))
+        by = max(0, min(y // self.bucket_size, self.buckets_y - 1))
+        return bx, by
+    
+    def add(self, x, y):
+        """Add a food position to the spatial index"""
+        bx, by = self._get_bucket(x, y)
+        self.buckets[bx][by].add((x, y))
+    
+    def remove(self, x, y):
+        """Remove a food position from the spatial index"""
+        bx, by = self._get_bucket(x, y)
+        self.buckets[bx][by].discard((x, y))
+    
+    def find_nearest(self, x, y, max_radius):
+        """
+        Find nearest food within max_radius using Chebyshev distance (ring-based).
+        Returns [fx, fy] or [-1, -1] if no food found.
+        
+        Uses Chebyshev distance (max(|dx|,|dy|)) to match the original spiral
+        search behavior where rings are square, not circular.
+        """
+        bx, by = self._get_bucket(x, y)
+        
+        # Maximum bucket radius to search
+        max_bucket_radius = (max_radius + self.bucket_size - 1) // self.bucket_size
+        
+        best_dist = max_radius  # Chebyshev distance
+        best_food = None
+        
+        # Search in expanding rings of buckets for early termination
+        for ring in range(max_bucket_radius + 1):
+            # Early termination: if best food found and the ring's minimum 
+            # possible distance is greater than our best, we're done
+            if best_food is not None:
+                ring_min_dist = max(0, (ring - 1) * self.bucket_size)
+                if ring_min_dist >= best_dist:
+                    break
+            
+            # Search all buckets at this ring distance
+            for dbx in range(-ring, ring + 1):
+                for dby in range(-ring, ring + 1):
+                    # Only check perimeter of the ring (not interior, already checked)
+                    if ring == 0 or abs(dbx) == ring or abs(dby) == ring:
+                        check_bx = bx + dbx
+                        check_by = by + dby
+                        
+                        # Bounds check for bucket indices
+                        if 0 <= check_bx < self.buckets_x and 0 <= check_by < self.buckets_y:
+                            # Check all food in this bucket
+                            for fx, fy in self.buckets[check_bx][check_by]:
+                                # Use Chebyshev distance to match spiral search
+                                dist = max(abs(fx - x), abs(fy - y))
+                                if dist < best_dist:
+                                    best_dist = dist
+                                    best_food = [fx, fy]
+                                    # Very early exit: if food is at same position
+                                    if dist == 0:
+                                        return best_food
+        
+        return best_food if best_food else [-1, -1]
+    
+    def find_any_in_range(self, x, y, max_radius):
+        """
+        Find ANY food within max_radius (not necessarily nearest).
+        Returns [fx, fy] or [-1, -1] if no food found.
+        
+        Uses Chebyshev distance to match original spiral search behavior.
+        """
+        bx, by = self._get_bucket(x, y)
+        
+        # Maximum bucket radius to search
+        max_bucket_radius = (max_radius + self.bucket_size - 1) // self.bucket_size
+        
+        # Search buckets in expanding rings, return first food found in range
+        for ring in range(max_bucket_radius + 1):
+            for dbx in range(-ring, ring + 1):
+                for dby in range(-ring, ring + 1):
+                    # Only check perimeter of the ring (not interior)
+                    if ring == 0 or abs(dbx) == ring or abs(dby) == ring:
+                        check_bx = bx + dbx
+                        check_by = by + dby
+                        
+                        if 0 <= check_bx < self.buckets_x and 0 <= check_by < self.buckets_y:
+                            for fx, fy in self.buckets[check_bx][check_by]:
+                                # Chebyshev distance matches spiral ring search
+                                dist = max(abs(fx - x), abs(fy - y))
+                                if dist < max_radius:
+                                    return [fx, fy]
+        
+        return [-1, -1]
+    
+    def clear(self):
+        """Clear all food from the spatial index"""
+        for bx in range(self.buckets_x):
+            for by in range(self.buckets_y):
+                self.buckets[bx][by].clear()
 
 
 class WorldGrid:
@@ -613,6 +723,9 @@ class AntColony:
         self.foodPheromoneGrid = WorldGrid(GridSize[0], GridSize[1])  # Dropped by ants carrying food (paths to food)
         self.width = GridSize[0]
         self.height = GridSize[1]
+        
+        # Spatial index for O(1) food lookup instead of O(r²) spiral search
+        self.foodSpatialIndex = SpatialFoodIndex(GridSize[0], GridSize[1], bucket_size=10)
         
         # Calculate field scale factor for food quantities
         # Base reference: 90x90 grid = 8100 tiles (typical for 1000x1000 screen with 11px tiles)
@@ -728,8 +841,15 @@ class AntColony:
         if foodY < 0 or foodY >= self.height:
             return
 
+        # Check if this is a new food location (not already in grid)
+        was_empty = self.foodGrid.GetVal(foodX, foodY) in ([], 0, False)
+        
         # Use IncrementVal to stack food instead of SetVal
         self.foodGrid.IncrementVal(foodX, foodY, amount)
+        
+        # Add to spatial index if this is a new food location
+        if was_empty:
+            self.foodSpatialIndex.add(foodX, foodY)
  
     def add_wall(self, pos=None):
         """add to the wall grid in a random spot"""
@@ -849,7 +969,7 @@ class AntColony:
             else:
                 probBest = .99
             
-            if random.random() < probBest: # if less then probBest, add a random ant
+            if random.random() >= probBest: # if less than probBest, use evolved ants; otherwise add random
                 self.add_ant(brain=None, startP=self.hivePos)
                 # print("Adding random ant")
             else: # add a best ant or pick two best ants as parents
@@ -1015,7 +1135,7 @@ class AntColony:
     def ApplyEvolutionAdjusters(self):
         """Apply various evolution adjusters to shake up stagnant population"""
         print("🔄 STAGNATION DETECTED! Applying evolution adjusters...")
-        self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
+        self.hivePos = [random.randint(0, self.width-1), random.randint(0, self.height-1)]
         # first clear all ants and set max ants to 3000
         self.ants = []
         self.maxAnts = 3000
@@ -1136,56 +1256,15 @@ class AntColony:
             if frontPos[1] < 0 or frontPos[1] >= self.height:
                 ant.blockedFront = True
             
-            # # find the closest food
-            # closest = 1000000
+            # Find closest food using spatial index - O(f_local) instead of O(r²)
             closestFood = [-1,-1]
-            # for food in self.foodGrid.listActive():
-            #     # dist = math.sqrt((ant.x - food[0])**2 + (ant.y - food[1])**2)
-            #     dist = (ant.x - food[0])**2 + (ant.y - food[1])**2
-
-            #     if dist < closest:
-            #         closest = dist
-            #         if dist < 10:
-            #             closestFood = food
             
             # Only search for food if ant is NOT carrying food
             if not ant.carryingFood:
-                # Proper spiral search pattern - search in expanding squares
                 aX = int(ant.x)
                 aY = int(ant.y)
-                
-                # First check the ant's current position
-                current_food = self.foodGrid.GetVal(aX, aY)
-                if current_food != [] and current_food > 0:
-                    closestFood = [aX, aY]
-                else:
-                    # Search in expanding square rings around the ant
-                    # Use dynamic radius based on grid size
-                    for radius in range(1, self.foodSearchRadius):
-                        found = False
-                        
-                        # Search the perimeter of the current square
-                        for dx in range(-radius, radius + 1):
-                            for dy in range(-radius, radius + 1):
-                                # Only check perimeter positions (not interior)
-                                if abs(dx) == radius or abs(dy) == radius:
-                                    checkX = aX + dx
-                                    checkY = aY + dy
-                                    
-                                    # Bounds check
-                                    if (checkX >= 0 and checkX < self.width and 
-                                        checkY >= 0 and checkY < self.height):
-                                        
-                                        food_val = self.foodGrid.GetVal(checkX, checkY)
-                                        if food_val != [] and food_val > 0:
-                                            closestFood = [checkX, checkY]
-                                            found = True
-                                            break
-                            if found:
-                                break
-                        if found:
-                            break
-                      
+                # Use spatial index for fast nearest-food lookup
+                closestFood = self.foodSpatialIndex.find_nearest(aX, aY, self.foodSearchRadius)
                       
             if closestFood != [-1,-1]:
                 ant.ClossestFood = closestFood
@@ -1193,19 +1272,22 @@ class AntColony:
             if self.isAtHive(ant):
                 if ant.carryingFood:
                     ant.carryingFood = False
-                    # Reward the ant
-                    ant.life += 150
-                    ant.fitness += 500 #extra reward for returning food home
+                    ant.life += 150  # Reward: keep ant alive to forage again
                     
-                    # Award navigation fitness for successful return trip
+                    # === TRIP COMPLETION REWARD ===
+                    # Base reward for completing the round trip
+                    ant.fitness += 200
+                    
+                    # Bonus based on how far the food was from hive (harder = more reward)
                     if ant.foodPickupPos is not None:
-                        nav_fitness = ant.calculateNavigationFitness([ant.x, ant.y])
-                        ant.navigationFitness = max(0, nav_fitness)  # Only positive navigation fitness for successful return
-                        ant.fitness += ant.navigationFitness
-                        # print(f'Ant {ant.antID} navigation fitness: {ant.navigationFitness}')
-                        ant.foodPickupPos = None  # Reset pickup position
-                    
-                    # print(f'Ant {ant.antID} returned food to the hive!!')
+                        pickup_distance = math.sqrt(
+                            (ant.foodPickupPos[0] - self.hivePos[0])**2 + 
+                            (ant.foodPickupPos[1] - self.hivePos[1])**2
+                        )
+                        # 3 points per tile of distance (rewards far foraging)
+                        distance_bonus = int(pickup_distance * 3)
+                        ant.fitness += distance_bonus
+                        ant.foodPickupPos = None  # Reset for next trip
                 
             ant.RunBrain()
             ant.pDirection = float(ant.direction)
@@ -1239,18 +1321,21 @@ class AntColony:
                         # Use DecrementVal instead of RemoveVal to support food stacking
                         if self.foodGrid.DecrementVal(antClosestFood[0], antClosestFood[1]):
                         # print(f'consuming 1 food at {antClosestFood}')
+                            # Remove from spatial index if food is now empty at this location
+                            remaining_food = self.foodGrid.GetVal(antClosestFood[0], antClosestFood[1])
+                            if remaining_food in ([], 0, False):
+                                self.foodSpatialIndex.remove(antClosestFood[0], antClosestFood[1])
+                            
                             ant.ClossestFood = [-1,-1]
-                            # ant.energy += 10
                             ant.FoodConsumed += 1
-                            ant.life += 150 #reward the ant for finding food
-                            ant.fitness += 1
+                            ant.life += 150  # Keep ant alive longer to return food
+                            ant.fitness += 50  # Meaningful reward for finding food
                             if ant.life > 400:
-                                ant.life = 400 #keep things reasonable, some ants are too good
+                                ant.life = 400
 
                             ant.carryingFood = True
-                            # Record the pickup location for navigation fitness calculation
+                            # Record pickup position for navigation fitness
                             ant.foodPickupPos = [int(ant.x), int(ant.y)]
-                            ant.navigationFitness = 0  # Reset navigation fitness
 
                             # print(f'ant consumed food, food consumed: {ant.FoodConsumed}')
                             if ant.FoodConsumed > self.topFoodFound:
@@ -1330,30 +1415,23 @@ class AntColony:
                 if ant.DebugBrain:
                     self.FollowNextAnt = True
                 
-                # Calculate navigation fitness if ant was carrying food when it died
+                # === DEATH FITNESS CALCULATION ===
+                
+                # If ant died while carrying food, give partial credit for progress
                 if ant.carryingFood and ant.foodPickupPos is not None:
-                    ant.navigationFitness = ant.calculateNavigationFitness()
-                    ant.fitness += ant.navigationFitness  # Can be positive or negative
+                    nav_fitness = ant.calculateNavigationFitness()
+                    ant.fitness += nav_fitness  # Can be positive or negative (capped)
                 
                 self.ants.remove(ant)
-                #check how much food the ant consumed
-                foodConsumed = ant.FoodConsumed
+                
+                foodConsumed = ant.FoodConsumed  # This is actually "completed trips"
                 antFitness = ant.fitness
                 
-                foodBonus = foodConsumed *10 #bonus for food consumed 
-                antFitness += foodBonus
-                
-                # bonus for distance traveled from the hive while alive
-                distanceBonus = ant.FarthestTraveled * 0.05
-                if distanceBonus < 1:
-                    distanceBonus = 0
-                distanceBonus = int(distanceBonus**4)
-                
-                #ONLY IF EAT ONE FOOD ATLEAST
+                # Exploration bonus: reward ants that ventured far (but cap it)
+                # Only if they completed at least one trip
                 if foodConsumed > 0:
-                    antFitness += distanceBonus
-                # if distanceBonus > 0:
-                    # print(f"dead ant distanceBonus: {distanceBonus}")
+                    exploration_bonus = min(50, int(ant.FarthestTraveled * 0.5))
+                    antFitness += exploration_bonus
                 antBrain = ant.brain
                 self.totalDeadAnts += 1
                 if antFitness > 2:
@@ -1367,7 +1445,7 @@ class AntColony:
         #remove old pheromone cells and decay both types
         # Batch pheromone decay every 5 frames for performance
         if self.totalSteps % 5 == 0:
-            decay_rate = 0.025  # 5x normal rate since we do it every 5 frames
+            decay_rate = 0.1  # Faster decay prevents grid saturation over time
             
             # Handle nest pheromones
             activeNestPhers = self.nestPheromoneGrid.listActive()
@@ -1566,16 +1644,20 @@ class AntColony:
         #for i in range(2):
         # self.update()
 
+        # Cache active pheromone lists (avoid calling listActive() 4x per frame)
+        activeNestPhers = self.nestPheromoneGrid.listActive()
+        activeFoodPhers = self.foodPheromoneGrid.listActive()
+        
         # Find maximum pheromone values for both types for proper scaling
         maxNestPher = 0
         maxFoodPher = 0
         
-        for pher in self.nestPheromoneGrid.listActive():
+        for pher in activeNestPhers:
             pherVal = pher[2]
             if pherVal > maxNestPher:
                 maxNestPher = pherVal
                 
-        for pher in self.foodPheromoneGrid.listActive():
+        for pher in activeFoodPhers:
             pherVal = pher[2]
             if pherVal > maxFoodPher:
                 maxFoodPher = pherVal
@@ -1583,9 +1665,9 @@ class AntColony:
         self.TopPheromone = max(maxNestPher, maxFoodPher)
         
         # Draw nest pheromones (blue - paths to nest)
-        for pher in self.nestPheromoneGrid.listActive():
+        for pher in activeNestPhers:
             pherVal = pher[2]
-            if pherVal <= 0:
+            if pherVal <= 0.2:  # Skip barely-visible pheromones
                 continue
             ppxy = self.WorldToScreen([pher[0], pher[1]])
             
@@ -1598,9 +1680,9 @@ class AntColony:
                 pygame.draw.rect(screen, (0, 0, colorVal), ((ppxy[0]), (ppxy[1]), int(self.TileSize), int(self.TileSize)))
         
         # Draw food pheromones (red - paths to food)
-        for pher in self.foodPheromoneGrid.listActive():
+        for pher in activeFoodPhers:
             pherVal = pher[2]
-            if pherVal <= 0:
+            if pherVal <= 0.2:  # Skip barely-visible pheromones
                 continue
             ppxy = self.WorldToScreen([pher[0], pher[1]])
             
@@ -1886,6 +1968,15 @@ class AntColony:
             #show some stats on a box in the left top corner
             # dataShow = self.BestAnts[:30]
             dataShow = self.BestAnts
+            
+            # Draw semi-transparent dark background for legibility
+            if len(dataShow) > 0:
+                overlay_height = len(dataShow) * 12 + 15
+                overlay_width = 520
+                overlay = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 153))  # Black with 60% opacity (153/255 ≈ 0.6)
+                screen.blit(overlay, (5, 5))
+            
             #show the top 10
             for i, ant in enumerate(dataShow):
                 
@@ -1991,7 +2082,7 @@ class AntColony:
             # print('No changes to save')
             return
         
-        self.LastBestAnts = self.BestAnts
+        self.LastBestAnts = self.BestAnts.copy()
         
         saveObj = {"BestAnts":self.BestAnts}
         #today Timecode

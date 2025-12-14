@@ -115,7 +115,10 @@ class Ant:
             self.getNestPherLeft, self.getNestPherRight, self.getNestPherBack,
             self.getFoodPherLeft, self.getFoodPherRight, self.getFoodPherBack,
             self.getHiveDirection, self.getHiveDistance,
-            self.isCarryingFood  # Add here
+            self.isCarryingFood,
+            # Terrain density sensors (sense how hard terrain is in each direction)
+            self.getTerrainFront, self.getTerrainLeft, 
+            self.getTerrainRight, self.getTerrainBack
         ]
 
        
@@ -142,6 +145,11 @@ class Ant:
         self._cached_food_pher_back = 0
         self._cached_hive_direction = 0
         self._cached_hive_distance = 0
+        # Cached terrain density sensors (normalized 0-1)
+        self._cached_terrain_front = 0
+        self._cached_terrain_left = 0
+        self._cached_terrain_right = 0
+        self._cached_terrain_back = 0
         self._sensors_computed = False  # Flag to track if sensors need recomputing
         
 
@@ -227,7 +235,32 @@ class Ant:
         max_distance = math.sqrt(self.colony.width**2 + self.colony.height**2)
         self._cached_hive_distance = 1 - (distance / max_distance)
         
+        # Precompute terrain density sensors (normalized 0-1, where 1 = max density)
+        # Front
+        self._cached_terrain_front = self._sense_terrain_fast(cos_dir, sin_dir)
+        # Left
+        self._cached_terrain_left = self._sense_terrain_fast(dx_left, dy_left)
+        # Right
+        self._cached_terrain_right = self._sense_terrain_fast(dx_right, dy_right)
+        # Back
+        self._cached_terrain_back = self._sense_terrain_fast(dx_back, dy_back)
+        
         self._sensors_computed = True
+    
+    def _sense_terrain_fast(self, dx, dy, steps=2):
+        """Sense terrain density in a direction, returns normalized value 0-1"""
+        total_density = 0.0
+        x, y = self.x, self.y
+        for i in range(1, steps + 1):
+            ax = int(x + dx * i)
+            ay = int(y + dy * i)
+            val = self.colony.terrainGrid.GetVal(ax, ay)
+            if val not in ([], False, None):
+                total_density += val
+        # Normalize: max possible is steps * maxTerrainDensity
+        # Return average density normalized to 0-1
+        max_density = self.colony.maxTerrainDensity
+        return (total_density / steps) / max_density
     
     def _sense_line_fast(self, grid, dx, dy, steps=3, step=1.0):
         """Fast sensor line sensing with pre-computed direction vectors"""
@@ -472,6 +505,23 @@ class Ant:
         """isCarryingFood() : returns 1 if the ant is carrying food, else 0 """
         return 1 if self.carryingFood else 0
 
+    # Terrain density sensors - return normalized values (0-1) where 1 = max density
+    def getTerrainFront(self):
+        """getTerrainFront() : returns terrain density in front (0-1, higher = harder) """
+        return self._cached_terrain_front
+    
+    def getTerrainLeft(self):
+        """getTerrainLeft() : returns terrain density to the left (0-1, higher = harder) """
+        return self._cached_terrain_left
+    
+    def getTerrainRight(self):
+        """getTerrainRight() : returns terrain density to the right (0-1, higher = harder) """
+        return self._cached_terrain_right
+    
+    def getTerrainBack(self):
+        """getTerrainBack() : returns terrain density behind (0-1, higher = harder) """
+        return self._cached_terrain_back
+
     def foodDir(self):
         """foodDir() : returns the direction of the closest food """
         # return the relative direction of the closest food in a value between -1 and 1
@@ -526,12 +576,12 @@ class Ant:
        
        # ant has no access to the grid, so it cannot check for walls
         # futurePox = [self.x + math.cos(self.direction) * amount, self.y + math.sin(self.direction) * amount]
-        # curWall = self.wallGrid.GetVal(int(futurePox[0]), int(futurePox[1])
+        # curWall = self.terrainGrid.GetVal(int(futurePox[0]), int(futurePox[1])
         # if curWall != False:
         #     amount = 0
         #     self.life -= 1# penalize the ant for hitting a wall
         #     #damage the wall at the front of the ant by .1
-        #     self.wallGrid.SetVal(int(futurePox[0]), int(futurePox[1]), curWall - .1)
+        #     self.terrainGrid.SetVal(int(futurePox[0]), int(futurePox[1]), curWall - .1)
         
         if self.DebugBrain:
             print(self.blockedFront)
@@ -772,6 +822,15 @@ class WorldGrid:
     def listActive(self):
         """ Return list of active cells - O(active_count) instead of O(width*height) """
         return [[x, y, self.grid[x][y]] for x, y in self.active_cells]
+    
+    def sumValues(self):
+        """ Return total sum of all values in active cells (for counting stacked items) """
+        total = 0
+        for x, y in self.active_cells:
+            val = self.grid[x][y]
+            if val not in ([], None, False):
+                total += val
+        return total
 
 class AntColony:
     def __init__(self, _screenSize, _maxAnts, _tileSize):
@@ -785,7 +844,7 @@ class AntColony:
         GridSize = [int(self.screenSize[0]/self.TileSize), int(self.screenSize[1]/self.TileSize)]
         
         self.foodGrid = WorldGrid(GridSize[0], GridSize[1])
-        self.wallGrid = WorldGrid(GridSize[0], GridSize[1])
+        self.terrainGrid = WorldGrid(GridSize[0], GridSize[1])
         # Dual pheromone system: separate grids for nest-seeking and food-seeking pheromones
         self.nestPheromoneGrid = WorldGrid(GridSize[0], GridSize[1])  # Dropped by ants NOT carrying food (paths to nest)
         self.foodPheromoneGrid = WorldGrid(GridSize[0], GridSize[1])  # Dropped by ants carrying food (paths to food)
@@ -801,7 +860,7 @@ class AntColony:
         self.fieldScaleFactor = self.fieldArea / 8100.0
         
         # Scale maxFood based on field size
-        self.maxFood = int(2000 * self.fieldScaleFactor)
+        self.maxFood = int(4000 * self.fieldScaleFactor)
         self.maxFood = max(100, self.maxFood)  # Minimum 100 food
         
         # Food search radius scales with grid size - smaller grids use smaller radius
@@ -809,6 +868,11 @@ class AntColony:
         minDimension = min(self.width, self.height)
         # self.foodSearchRadius = max(3, min(10, minDimension // 9))
         self.foodSearchRadius = 10  # Keep it constant for now
+        
+        # Max terrain density - higher = blocks take longer to dig through
+        # At 0.5 reduction per ant, max density of 50 requires 100 ants to fully clear
+        self.maxTerrainDensity = 50
+        
         print(f'Field size: {self.width}x{self.height} = {self.fieldArea} tiles, scale factor: {self.fieldScaleFactor:.2f}, maxFood: {self.maxFood}, searchRadius: {self.foodSearchRadius}')
 
         # self.hivePos = [int(GridSize[0]*0.5), int(GridSize[1]*0.5)]
@@ -845,6 +909,10 @@ class AntColony:
         
         # Path mode flag - only store ant history when enabled
         self.pathMode = False
+        
+        # World reset settings - regenerate terrain and move hive periodically
+        self.worldResetInterval = 20000  # Steps between world resets (0 = disabled)
+        self.lastWorldReset = 0  # Step when world was last reset
         
         # Cache fonts for performance (avoid creating font objects in draw loops)
         self._font_tiny = None   # Size 12 - for food count labels
@@ -920,21 +988,24 @@ class AntColony:
         foodX = random.randint(0, self.width-1)
         foodY = random.randint(0, self.height-1)
 
-        #make sure it doesnt drop on a wall or near the hive
-        worldVal = self.wallGrid.GetVal(foodX, foodY)
-        if worldVal == False or worldVal == []:
-            distToHive = math.sqrt((foodX - self.hivePos[0])**2 + (foodY - self.hivePos[1])**2)
-            if distToHive < 15:
-                return
-
         if pos:
             foodX = pos[0]
             foodY = pos[1]
             
-        #SKIP IF OUTSIDE BOUNDS
+        # SKIP IF OUTSIDE BOUNDS
         if foodX < 0 or foodX >= self.width:
             return
         if foodY < 0 or foodY >= self.height:
+            return
+
+        # Don't place food on high-density terrain (density > half max)
+        terrain_density = self.terrainGrid.GetVal(foodX, foodY)
+        if terrain_density not in ([], False, None) and terrain_density > self.maxTerrainDensity / 2:
+            return  # Too dense, no food here
+        
+        # Don't place food near the hive
+        distToHive = math.sqrt((foodX - self.hivePos[0])**2 + (foodY - self.hivePos[1])**2)
+        if distToHive < 15:
             return
 
         # Check if this is a new food location (not already in grid)
@@ -947,60 +1018,138 @@ class AntColony:
         if was_empty:
             self.foodSpatialIndex.add(foodX, foodY)
  
-    def add_wall(self, pos=None):
-        """add to the wall grid in a random spot"""
-        wallX = random.randint(0, self.width-1)
-        wallY = random.randint(0, self.height-1)
-        if pos:
-            wallX = pos[0]
-            wallY = pos[1]
-        self.wallGrid.SetVal(wallX, wallY, 1)
+    def set_terrain(self, x, y, density):
+        """Set terrain density at a position (0 to maxTerrainDensity scale)"""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            # Clamp density to valid range
+            density = max(0, min(self.maxTerrainDensity, density))
+            if density > 0:
+                self.terrainGrid.SetVal(x, y, density)
+            else:
+                self.terrainGrid.RemoveVal(x, y)
 
     def create_world(self):
+        """Create the world with ants and varied terrain densities"""
+        # Add initial ants
         for i in range(self.maxAnts):
             self.add_ant(brain=None, startP=self.hivePos)
-        # for i in range(1000):
-            # self.add_food()
-        # make a cross of walls 70 percent of width and height
-        startX = int(self.width * 0.15)
-        endX = int(self.width * 0.85)
-        startY = int(self.height * 0.15)
-        endY = int(self.height * 0.85)
         
-        # for i in range(startX, endX):
-        #     self.wallGrid.SetVal(i, int(self.height/2), 1)
-        # for i in range(startY, endY):
-        #     self.wallGrid.SetVal(int(self.width/2), i, 1)
-            
+        # Generate terrain with patches of similar density
+        # Uses multi-octave noise for natural-looking terrain with large coherent regions
+        max_d = self.maxTerrainDensity
         
-        #just make some random walls around
-        #width*height * .3
-        numWalls = int(self.width * self.height * .05)
+        # Terrain patch size - lower frequency = larger patches
+        # 0.05 means patches roughly 20 tiles wide, 0.02 means ~50 tiles wide
+        patch_frequency = 0.06
         
-            
-        # #add some random walls
-        for i in range(numWalls):
-            self.add_wall()
+        # Random phase offsets for this world (makes each world unique)
+        phase_x = random.random() * 1000
+        phase_y = random.random() * 1000
         
-        #create some walls in a ring shape
-        # use a random number to decide if the ring is filled or not
-        #ring 1
-        
-         
-        # for r in range(0, 3):
-            
-        #     ringDiameter = (r+2) * 10
-            
-        #     openingAng = random.randint(0, 360)
-            
-        #     for angle in range(0, 360):
-        #         x = int(self.width/2 + math.cos(math.radians(angle)) * ringDiameter)
-        #         y = int(self.height/2 + math.sin(math.radians(angle)) * ringDiameter)
+        for x in range(self.width):
+            for y in range(self.height):
+                # Calculate distance from hive
+                dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
                 
-        #         #leave a 10degree gap in a random spot
-        #         if angle > openingAng and angle < openingAng + 90:
-        #             continue
-        #         self.wallGrid.SetVal(x, y, 1)
+                # Keep area around hive clear (radius 10)
+                if dist_to_hive < 10:
+                    continue  # Leave as 0 (open air)
+                
+                # Multi-octave noise for natural terrain patches
+                # Octave 1: Large patches (primary structure)
+                noise1 = math.sin((x + phase_x) * patch_frequency) * math.cos((y + phase_y) * patch_frequency)
+                
+                # Octave 2: Medium detail (secondary features)
+                noise2 = math.sin((x + phase_x) * patch_frequency * 2.5) * math.cos((y + phase_y) * patch_frequency * 2.5) * 0.4
+                
+                # Octave 3: Small detail (texture)
+                noise3 = math.sin((x + phase_x) * patch_frequency * 6) * math.cos((y + phase_y) * patch_frequency * 6) * 0.15
+                
+                # Combine octaves (-1 to 1 range)
+                combined_noise = noise1 + noise2 + noise3
+                
+                # Map noise to density with AMPLIFIED range to create empty and max-density regions
+                # Amplitude > 1 means some regions exceed bounds and get clamped to 0 or max
+                # 1.8 = ~30% truly empty, ~30% at max density
+                amplitude = 3.8
+                density = ((combined_noise + 1.55) / 3.1 * max_d - max_d/2) * amplitude + max_d/2
+                
+                # Add slight random variation for texture
+                density += random.gauss(0, max_d * 0.05)
+                
+                # Clamp to valid range - creates flat empty and max-density patches
+                density = max(0, min(max_d, density))
+                
+                # Only set non-zero densities (saves memory in sparse grid)
+                if density > 0.5:
+                    self.set_terrain(x, y, int(density))
+    
+    def reset_world(self):
+        """Reset the world: regenerate terrain, clear pheromones, move hive, reset ants"""
+        print("🌍 WORLD RESET - Regenerating terrain and moving hive...")
+        
+        # Store old hive position for reference
+        old_hive = self.hivePos.copy()
+        
+        # Move hive to new random position
+        self.hivePos = [random.randint(10, self.width-10), random.randint(10, self.height-10)]
+        print(f"  • Hive moved from {old_hive} to {self.hivePos}")
+        
+        # Clear all grids
+        self.terrainGrid.Clear()
+        self.nestPheromoneGrid.Clear()
+        self.foodPheromoneGrid.Clear()
+        self.foodGrid.Clear()
+        self.foodSpatialIndex.clear()
+        
+        # Regenerate terrain with patches of similar density (same algorithm as create_world)
+        max_d = self.maxTerrainDensity
+        patch_frequency = 0.04
+        
+        # New random phase for unique terrain pattern
+        phase_x = random.random() * 1000
+        phase_y = random.random() * 1000
+        
+        for x in range(self.width):
+            for y in range(self.height):
+                dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                
+                # Keep area around new hive clear
+                if dist_to_hive < 10:
+                    continue
+                
+                # Multi-octave noise for natural terrain patches
+                noise1 = math.sin((x + phase_x) * patch_frequency) * math.cos((y + phase_y) * patch_frequency)
+                noise2 = math.sin((x + phase_x) * patch_frequency * 2.5) * math.cos((y + phase_y) * patch_frequency * 2.5) * 0.4
+                noise3 = math.sin((x + phase_x) * patch_frequency * 6) * math.cos((y + phase_y) * patch_frequency * 6) * 0.15
+                
+                combined_noise = noise1 + noise2 + noise3
+                
+                # Amplified range to create truly empty and max-density regions
+                amplitude = 1.8
+                density = ((combined_noise + 1.55) / 3.1 * max_d - max_d/2) * amplitude + max_d/2
+                density += random.gauss(0, max_d * 0.05)
+                density = max(0, min(max_d, density))
+                
+                if density > 0.5:
+                    self.set_terrain(x, y, int(density))
+        
+        # Reset all ants to new hive position
+        for ant in self.ants:
+            ant.x = self.hivePos[0] + random.random() * 3
+            ant.y = self.hivePos[1] + random.random() * 3
+            ant.direction = random.random() * 2 * math.pi
+            ant.carryingFood = False
+            ant.ClossestFood = [-1, -1]
+            ant.prevCellX = -1
+            ant.prevCellY = -1
+            ant.foodPickupPos = None
+        
+        # Update reset tracking
+        self.lastWorldReset = self.totalSteps
+        
+        print(f"  • Terrain regenerated with {len(self.terrainGrid.listActive())} blocks")
+        print("✅ World reset complete!")
                 
            
     def Repopulate(self):
@@ -1135,16 +1284,16 @@ class AntColony:
             for j in range(2):
                 quad = [[i*self.width/2, j*self.height/2], [i*self.width/2, (j+1)*self.height/2], [(i+1)*self.width/2, j*self.height/2], [(i+1)*self.width/2, (j+1)*self.height/2]]
                 quads.append(quad)
-        # count current food and add more as needed
-        currentFood = len(self.foodGrid.listActive())
+        
+        # Count TOTAL food quantity (including stacked food), not just cells with food
+        totalFood = self.foodGrid.sumValues()
 
-        if currentFood >= self.maxFood:
+        if totalFood >= self.maxFood:
             return # already at max food
         
         whileCount = 0
         newFoodCount = 0
-        while newFoodCount < ammt: # food scaricity produces more competition for food
-            # print(f'Current Food: {currentFood} Ammt: {ammt}')
+        while newFoodCount < ammt: # food scarcity produces more competition for food
             whileCount += 1
             if whileCount > 100:
                 print("Stuck in while loop during food replenish, breaking out")
@@ -1155,17 +1304,18 @@ class AntColony:
             #find a random spot in the quadrant
             qLeft = int(min(quads[quadrant][0][0], quads[quadrant][3][0]))
             qRight = int(max(quads[quadrant][0][0], quads[quadrant][3][0]))
-            # print(f'qLeft: {qLeft}, qRight: {qRight}')
             x = random.randint(qLeft, qRight)
             qBottom = int(min(quads[quadrant][1][1], quads[quadrant][2][1]))
             qTop = int(max(quads[quadrant][1][1], quads[quadrant][2][1]))
-            # print(f'qBottom: {qBottom}, qTop: {qTop}')
             y = random.randint(qBottom, qTop)
             foodPos = [x, y]
-            # print(f'adding food at {foodPos}')
-            #create littel clusters of 20 food
-            for i in range(60):
-                foodPosRand = [foodPos[0] + random.randint(-5, 5), foodPos[1] + random.randint(-5, 5)]
+            
+            #create small, dense clusters of food (tighter spread, more stacking)
+            cluster_spread = 2  # Smaller spread = tighter clusters
+            cluster_size = 30   # Fewer positions but more stacking
+            for i in range(cluster_size):
+                foodPosRand = [foodPos[0] + random.randint(-cluster_spread, cluster_spread), 
+                               foodPos[1] + random.randint(-cluster_spread, cluster_spread)]
                 #dont drop within 20 tiles of the hive
                 #MUST BE WITHIN BOUNDS OF GRID
                 if foodPosRand[0] < 0 or foodPosRand[0] >= self.width:
@@ -1175,14 +1325,19 @@ class AntColony:
                 distToHive = math.sqrt((foodPosRand[0] - self.hivePos[0])**2 + (foodPosRand[1] - self.hivePos[1])**2)
                
                 if distToHive > 25:
-                    # print(f'distToHive: {distToHive}')
-                    #dont drop on a wall
-                    worldVal = self.wallGrid.GetVal(foodPosRand[0], foodPosRand[1])
-                    # print (f'worldVal: {worldVal}')
-                    if worldVal == False or worldVal == []:
-                        self.add_food(foodPosRand)
-                        currentFood = len(self.foodGrid.listActive())
-                        newFoodCount += 1
+                    # Only place food on low-density terrain (density <= half max)
+                    terrain_density = self.terrainGrid.GetVal(foodPosRand[0], foodPosRand[1])
+                    if terrain_density in ([], False, None):
+                        terrain_density = 0
+                    
+                    if terrain_density <= self.maxTerrainDensity / 2:
+                        # Add 2-4 food per position for denser stacking
+                        stack_amount = random.randint(2, 4)
+                        self.add_food(foodPosRand, amount=stack_amount)
+                        newFoodCount += stack_amount
+                        # Check if we've hit max food (accounting for stacking)
+                        if self.foodGrid.sumValues() >= self.maxFood:
+                            return
         # print('food replenished')
 
 
@@ -1347,16 +1502,14 @@ class AntColony:
                 ant.x = self.hivePos[0]
                 ant.y = self.hivePos[1]
                 ant.direction = 0
-            if self.wallGrid.GetVal(frontPos[0], frontPos[1]) != []:
-                # print(self.wallGrid.GetVal(frontPos[0], frontPos[1]) )
-                ant.blockedFront = [frontPos[0], frontPos[1]]
-            else:
-                ant.blockedFront = False
-        
+            # Check bounds - only true blocking is world edges
             if frontPos[0] < 0 or frontPos[0] >= self.width:
                 ant.blockedFront = True
-            if frontPos[1] < 0 or frontPos[1] >= self.height:
+            elif frontPos[1] < 0 or frontPos[1] >= self.height:
                 ant.blockedFront = True
+            else:
+                # Terrain is traversable but has energy cost - not a true block
+                ant.blockedFront = False
             
             # Find closest food using spatial index - O(f_local) instead of O(r²)
             closestFood = [-1,-1]
@@ -1453,12 +1606,32 @@ class AntColony:
             #         print(f'New top ant!!: {ant.FoodConsumed}')
             #     # self.foodGrid.SetVal(int(ant.x), int(ant.y), 0)
             #     self.foodGrid.RemoveVal(int(ant.x), int(ant.y))
-            # Pheromone dropping only when ant moves to a new cell
+            # Actions when ant moves to a new cell: terrain cost, digging, pheromones
             x_pos = int(ant.x)
             y_pos = int(ant.y)
             
             # Check if ant has moved to a new cell
             if ant.prevCellX != x_pos or ant.prevCellY != y_pos:
+                
+                # === TERRAIN ENERGY COST AND DIGGING ===
+                terrain_density = self.terrainGrid.GetVal(x_pos, y_pos)
+                if terrain_density in ([], None, False):
+                    terrain_density = 0
+                
+                if terrain_density > 0:
+                    # Apply energy cost: base(1) + density/2
+                    # Note: base cost of 1 is already applied via ant.life -= 1 elsewhere
+                    terrain_cost = int(terrain_density / 2)
+                    ant.life -= terrain_cost
+                    
+                    # Dig: reduce terrain density by 0.5
+                    new_density = terrain_density - 0.5
+                    if new_density <= 0:
+                        self.terrainGrid.RemoveVal(x_pos, y_pos)
+                    else:
+                        self.terrainGrid.SetVal(x_pos, y_pos, new_density)
+                
+                # === PHEROMONE DROPPING ===
                 pheromone_amount = 1.0  # Higher amount since it's dropped less frequently
                 
                 if ant.carryingFood:
@@ -1577,22 +1750,26 @@ class AntColony:
                     self.foodPheromoneGrid.SetVal(pher[0], pher[1], pher[2] - decay_rate)
 
         # print('pheromone updated')
-        quadrant = int(self.totalSteps / 200) % 4
-        # Scale food replenishment amounts based on field size
-        baseSmall = max(1, int(100 * self.fieldScaleFactor))
-        baseLarge = max(10, int(800 * self.fieldScaleFactor))
-        baseCluster = max(1, int(25 * self.fieldScaleFactor))
         
-        # Add more food clusters in all quadrants for better distribution
-        self.ReplenishFood((quadrant+1)% 4, baseSmall)
-        self.ReplenishFood((quadrant+2)% 4, baseSmall)
-        self.ReplenishFood((quadrant+3)% 4, baseSmall)
-        self.ReplenishFood(quadrant, baseLarge)
-        
-        # Add additional smaller clusters in all quadrants every step
-        for q in range(4):
-            self.ReplenishFood(q, baseCluster)
-        # print('food replenished')
+        # Only replenish food when it drops below 50% of max
+        currentFood = self.foodGrid.sumValues()
+        if currentFood < self.maxFood * 0.5:
+            quadrant = int(self.totalSteps / 200) % 4
+            # Scale food replenishment amounts based on field size
+            baseSmall = max(1, int(100 * self.fieldScaleFactor))
+            baseLarge = max(10, int(800 * self.fieldScaleFactor))
+            baseCluster = max(1, int(25 * self.fieldScaleFactor))
+            
+            # Add more food clusters in all quadrants for better distribution
+            self.ReplenishFood((quadrant+1)% 4, baseSmall)
+            self.ReplenishFood((quadrant+2)% 4, baseSmall)
+            self.ReplenishFood((quadrant+3)% 4, baseSmall)
+            self.ReplenishFood(quadrant, baseLarge)
+            
+            # Add additional smaller clusters in all quadrants every step
+            for q in range(4):
+                self.ReplenishFood(q, baseCluster)
+            # print('food replenished')
 
         repop_result = self.Repopulate()
         endTime = time.time()
@@ -1602,6 +1779,12 @@ class AntColony:
         steps_since_improvement = self.totalSteps - self.lastLeaderboardChangeStep
         if steps_since_improvement >= self.stagnationThreshold:
             self.ApplyEvolutionAdjusters()
+        
+        # Check for world reset interval
+        if self.worldResetInterval > 0:
+            steps_since_reset = self.totalSteps - self.lastWorldReset
+            if steps_since_reset >= self.worldResetInterval:
+                self.reset_world()
         
         if self.totalSteps % 1000 == 0:
             print("------------------report-----------------")
@@ -1614,7 +1797,9 @@ class AntColony:
             print(f'Current Leaderboard Size: {len(self.BestAnts)}')
             if len(self.BestAnts) >= 100:
                 print(f'Lowest Leaderboard Fitness: {self.lastLowestLeaderboardFitness}')
-            # print(f'Top Pheromone: {self.TopPheromone}')
+            if self.worldResetInterval > 0:
+                steps_until_reset = self.worldResetInterval - (self.totalSteps - self.lastWorldReset)
+                print(f'Steps Until World Reset: {steps_until_reset}/{self.worldResetInterval}')
             print(f'Update Time: {self.UpdateTime}')
             if "probbest" in repop_result:
                 print(f'Repopulate Probiability of random ant: {repop_result["probbest"]}')
@@ -1818,6 +2003,31 @@ class AntColony:
                 pygame.image.save(screen, f'dataSave/{tCode}.png')
             self.LastSave = time.time()
 
+        # Draw terrain - simple cyberpunk style (cool gray + cyan accent)
+        for terrain in self.terrainGrid.listActive():
+            tpxy = self.WorldToScreen(terrain)
+            tx, ty = int(tpxy[0]), int(tpxy[1])
+            ts = int(self.TileSize)
+            
+            density = terrain[2]
+            if density <= 0:
+                continue
+            
+            norm_density = min(density / self.maxTerrainDensity, 1.0)
+            
+            # Cool gray fill - darker = denser
+            gray = int(30 + (1 - norm_density) * 40)
+            cyan_tint = int(norm_density * 60)
+            terrain_color = (gray, gray + cyan_tint // 3, gray + cyan_tint // 2)
+            pygame.draw.rect(screen, terrain_color, (tx, ty, ts, ts))
+            
+            # Single cyan dot for high density blocks only
+            if norm_density > 0.6:
+                cx, cy = tx + ts // 2, ty + ts // 2
+                dot_brightness = int(80 + norm_density * 100)
+                screen.set_at((cx, cy), (0, dot_brightness, dot_brightness + 20))
+
+        # Draw food on top of terrain
         for food in self.foodGrid.listActive():
             food_count = food[2]
             if food_count == 0:
@@ -1860,15 +2070,6 @@ class AntColony:
                     text = font.render(str(food_count), True, (255, 255, 255))
                     text_rect = text.get_rect(center=(int(cx), int(cy)))
                     screen.blit(text, text_rect)
-            
-        for wall in self.wallGrid.listActive():
-            wpxy = self.WorldToScreen(wall)
-            wpxy = (int(wpxy[0]), int(wpxy[1]))
-            # pygame.draw.rect(screen, (100,100,100), (wpxy[0], wpxy[1], self.TileSize, self.TileSize))
-            # small gray hollow box with x inside
-            pygame.draw.rect(screen, (100,100,100), (wpxy[0], wpxy[1], self.TileSize, self.TileSize), 1)
-            # pygame.draw.line(screen, (100,100,100), (wpxy[0], wpxy[1]), (wpxy[0]+self.TileSize-1, wpxy[1]+self.TileSize-1))
-            # pygame.draw.line(screen, (100,100,100), (wpxy[0]+self.TileSize, wpxy[1]), (wpxy[0]-1, wpxy[1]+self.TileSize-1))
             
 
         for ant in self.ants:
@@ -2081,7 +2282,7 @@ class AntColony:
             # Draw semi-transparent dark background for legibility
             if len(dataShow) > 0:
                 overlay_height = len(dataShow) * 12 + 15
-                overlay_width = 520
+                overlay_width = 420
                 overlay = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
                 overlay.fill((0, 0, 0, 153))  # Black with 60% opacity (153/255 ≈ 0.6)
                 screen.blit(overlay, (5, 5))
@@ -2392,6 +2593,10 @@ class Game:
                 self.screen.blit(fps_text, (self.screenSize[0]-100, 10))
                 ants_text = font.render(f'Ants: {len(self.antColony.ants)}', True, (255, 255, 255))
                 self.screen.blit(ants_text, (self.screenSize[0]-100, 30))
+                # Display total food on field
+                total_food = self.antColony.foodGrid.sumValues()
+                food_text = font.render(f'Food: {total_food}', True, (255, 255, 255))
+                self.screen.blit(food_text, (self.screenSize[0]-100, 50))
             
             # Draw battery indicator directly on screen (not affected by scaling)
             # Minimal 20px bar on bottom edge, no text

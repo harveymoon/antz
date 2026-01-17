@@ -20,6 +20,13 @@ try:
 except ImportError:
     PISUGAR_AVAILABLE = False
 
+# Brain size limits (global constants)
+MIN_BRAIN_SIZE = 6
+MAX_BRAIN_SIZE = 64
+
+# Pheromone limits
+MAX_PHEROMONE = 10  # Maximum pheromone value per cell
+
 
 def BrainToColor(brain):
     """Convert a brain to a color"""
@@ -154,9 +161,11 @@ class Ant:
         
 
 
-    def create_brain(self, size=12):
+    def create_brain(self, size=None):
         """Create_Brain : create a random brain"""
-        brainSize = random.randint(6, size)
+        if size is None:
+            size = MAX_BRAIN_SIZE
+        brainSize = random.randint(MIN_BRAIN_SIZE, size)
         for i in range(brainSize):
             src = random.random() > 0.5
             dest = random.random() > 0.5
@@ -187,37 +196,38 @@ class Ant:
         sin_dir = math.sin(self.direction)
         
         # Precompute all 8 pheromone sensors using inline calculations
+        # All pheromone values normalized to 0-1 range by dividing by MAX_PHEROMONE
         # Front (angle=0): dx=cos_dir, dy=sin_dir
         self._cached_nest_pher_front = self._sense_line_fast(
-            self.colony.nestPheromoneGrid, cos_dir, sin_dir, steps=3)
+            self.colony.nestPheromoneGrid, cos_dir, sin_dir, steps=3) / MAX_PHEROMONE
         self._cached_food_pher_front = self._sense_line_fast(
-            self.colony.foodPheromoneGrid, cos_dir, sin_dir, steps=3)
+            self.colony.foodPheromoneGrid, cos_dir, sin_dir, steps=3) / MAX_PHEROMONE
         
         # Left (angle=-pi/2): rotate by -90 degrees
         # dx = cos_dir*0 - sin_dir*(-1) = sin_dir
         # dy = cos_dir*(-1) + sin_dir*0 = -cos_dir
         dx_left, dy_left = sin_dir, -cos_dir
         self._cached_nest_pher_left = self._sense_line_fast(
-            self.colony.nestPheromoneGrid, dx_left, dy_left, steps=3)
+            self.colony.nestPheromoneGrid, dx_left, dy_left, steps=3) / MAX_PHEROMONE
         self._cached_food_pher_left = self._sense_line_fast(
-            self.colony.foodPheromoneGrid, dx_left, dy_left, steps=3)
+            self.colony.foodPheromoneGrid, dx_left, dy_left, steps=3) / MAX_PHEROMONE
         
         # Right (angle=pi/2): rotate by +90 degrees  
         # dx = cos_dir*0 - sin_dir*1 = -sin_dir
         # dy = cos_dir*1 + sin_dir*0 = cos_dir
         dx_right, dy_right = -sin_dir, cos_dir
         self._cached_nest_pher_right = self._sense_line_fast(
-            self.colony.nestPheromoneGrid, dx_right, dy_right, steps=3)
+            self.colony.nestPheromoneGrid, dx_right, dy_right, steps=3) / MAX_PHEROMONE
         self._cached_food_pher_right = self._sense_line_fast(
-            self.colony.foodPheromoneGrid, dx_right, dy_right, steps=3)
+            self.colony.foodPheromoneGrid, dx_right, dy_right, steps=3) / MAX_PHEROMONE
         
         # Back (angle=pi): rotate by 180 degrees
         # dx = -cos_dir, dy = -sin_dir
         dx_back, dy_back = -cos_dir, -sin_dir
         self._cached_nest_pher_back = self._sense_line_fast(
-            self.colony.nestPheromoneGrid, dx_back, dy_back, steps=2)
+            self.colony.nestPheromoneGrid, dx_back, dy_back, steps=2) / MAX_PHEROMONE
         self._cached_food_pher_back = self._sense_line_fast(
-            self.colony.foodPheromoneGrid, dx_back, dy_back, steps=2)
+            self.colony.foodPheromoneGrid, dx_back, dy_back, steps=2) / MAX_PHEROMONE
         
         # Cache hive direction and distance (also computed multiple times)
         dx_hive = self.colony.hivePos[0] - self.x
@@ -248,18 +258,23 @@ class Ant:
         self._sensors_computed = True
     
     def _sense_terrain_fast(self, dx, dy, steps=2):
-        """Sense terrain density in a direction, returns normalized value 0-1"""
+        """Sense terrain density in a direction, returns normalized value 0-1
+        Walls (WALL_DENSITY = -1) are treated as maximum density (impassable)"""
         total_density = 0.0
         x, y = self.x, self.y
+        max_density = self.colony.maxTerrainDensity
         for i in range(1, steps + 1):
             ax = int(x + dx * i)
             ay = int(y + dy * i)
             val = self.colony.terrainGrid.GetVal(ax, ay)
             if val not in ([], False, None):
-                total_density += val
+                # Treat walls as maximum density so ants sense them as impassable
+                if val == self.colony.WALL_DENSITY:
+                    total_density += max_density
+                else:
+                    total_density += val
         # Normalize: max possible is steps * maxTerrainDensity
         # Return average density normalized to 0-1
-        max_density = self.colony.maxTerrainDensity
         return (total_density / steps) / max_density
     
     def _sense_line_fast(self, grid, dx, dy, steps=3, step=1.0):
@@ -529,19 +544,15 @@ class Ant:
         if self.ClossestFood == [-1,-1]:
             return 0
         
-        #if distance to food is far, return 0
-        
         #get the direction of the food
         dx = self.ClossestFood[0] - self.x
         dy = self.ClossestFood[1] - self.y
         
-        # dist = math.sqrt(dx**2 + dy**2)
-        # if dist > 5:
-        #     return 0
-        
         angle = math.atan2(dy, dx)
-        angle = angle - self.direction
-        return angle / math.pi
+        relative_angle = angle - self.direction
+        # Normalize to [-pi, pi] to ensure output is [-1, 1]
+        relative_angle = (relative_angle + math.pi) % (2 * math.pi) - math.pi
+        return relative_angle / math.pi
  
     def foodFront(self):
         """foodFront() : returns the distance to the closest food in front of the ant """
@@ -603,6 +614,17 @@ class Ant:
         
         self.x += addX
         self.y += addY
+        
+        # Clamp position to grid boundaries - prevent ants from escaping
+        if self.x < 0:
+            self.x = 0
+        elif self.x >= self.colony.width:
+            self.x = self.colony.width - 0.01
+        if self.y < 0:
+            self.y = 0
+        elif self.y >= self.colony.height:
+            self.y = self.colony.height - 0.01
+        
         if self.DebugBrain:
             print(f'new pos: {self.x}, {self.y}')
         # self.energy -= 1
@@ -839,6 +861,7 @@ class AntColony:
         #hive pos is 80percent in the corner right
         self.screenSize = _screenSize
         self.FollowNextAnt = False
+        self.brainDebugEnabled = False  # Track if brain debug mode is toggled on
         #40 pixels per tile
         self.TileSize = _tileSize
         GridSize = [int(self.screenSize[0]/self.TileSize), int(self.screenSize[1]/self.TileSize)]
@@ -871,7 +894,10 @@ class AntColony:
         
         # Max terrain density - higher = blocks take longer to dig through
         # At 0.5 reduction per ant, max density of 50 requires 100 ants to fully clear
-        self.maxTerrainDensity = 50
+        self.maxTerrainDensity = 150
+        
+        # Special wall value - impassable terrain that can't be dug through
+        self.WALL_DENSITY = -1
         
         print(f'Field size: {self.width}x{self.height} = {self.fieldArea} tiles, scale factor: {self.fieldScaleFactor:.2f}, maxFood: {self.maxFood}, searchRadius: {self.foodSearchRadius}')
 
@@ -884,6 +910,11 @@ class AntColony:
         
         self.BestAnts = []
         self.LastBestAnts = []
+        
+        # Load-mode tracking for reintroducing loaded ants
+        self.loadMode = False
+        self.loadedAntBrains = []
+        self.loadedAntInjectChance = 0.25
         
         self.TopPheromone = 0
 
@@ -898,7 +929,7 @@ class AntColony:
         
         # Stagnation detection variables
         self.lastLeaderboardChangeStep = 0  # Step when leaderboard last changed
-        self.stagnationThreshold = 10000  # Steps without improvement before triggering evolution adjusters
+        self.stagnationThreshold = 100000  # Steps without improvement before triggering evolution adjusters
         self.lastTopFitness = 0  # Track the best fitness achieved
         self.lastLowestLeaderboardFitness = 0  # Track the lowest fitness on the leaderboard
         
@@ -909,9 +940,10 @@ class AntColony:
         
         # Path mode flag - only store ant history when enabled
         self.pathMode = False
+        self.foodEatenPositions = []  # Track where food was picked up (for path mode visualization)
         
         # World reset settings - regenerate terrain and move hive periodically
-        self.worldResetInterval = 20000  # Steps between world resets (0 = disabled)
+        self.worldResetInterval = 0  # Steps between world resets (0 = disabled)
         self.lastWorldReset = 0  # Step when world was last reset
         
         # Cache fonts for performance (avoid creating font objects in draw loops)
@@ -919,6 +951,13 @@ class AntColony:
         self._font_small = None  # Size 20 - for debug info
         self._font_medium = None # Size 26 - for FPS display
         self._font_mono = None   # Monospace size 12 - for stats
+        
+        # Timeline overlay system for fitness tracking
+        self.fitnessHistory = []  # List of fitness snapshots over time (saved when saveData is called)
+        
+        # Hover info display tracking (click to show, auto-hide after timeout)
+        self.hoverClickTime = 0  # Timestamp of last mouse click for hover
+        self.hoverTimeout = 3.0  # Seconds to show hover info after click
         
         self.create_world()
         
@@ -950,6 +989,39 @@ class AntColony:
         ay = apos[1]/self.height * self.screenSize[1]
         return (ax, ay)
 
+    def ScreenToWorld(self, screen_pos):
+        """Convert screen coordinates to world grid coordinates"""
+        wx = int(screen_pos[0] / self.screenSize[0] * self.width)
+        wy = int(screen_pos[1] / self.screenSize[1] * self.height)
+        # Clamp to grid bounds
+        wx = max(0, min(wx, self.width - 1))
+        wy = max(0, min(wy, self.height - 1))
+        return (wx, wy)
+
+    def toggleBrainDebug(self):
+        """Toggle brain debug mode. Only one ant can be in debug at a time."""
+        # Toggle the enabled state
+        self.brainDebugEnabled = not self.brainDebugEnabled
+        
+        if not self.brainDebugEnabled:
+            # Turn off debug mode for any ant that has it
+            for ant in self.ants:
+                if ant.DebugBrain:
+                    ant.DebugBrain = False
+            print("Brain debug mode: OFF")
+        else:
+            # Turn on debug mode - pick an ant
+            self.selectNewDebugAnt()
+    
+    def selectNewDebugAnt(self):
+        """Select a new ant for brain debugging (used when debug mode is enabled)."""
+        if len(self.ants) > 0:
+            chosen_ant = random.choice(self.ants)
+            chosen_ant.DebugBrain = True
+            print(f"Brain debug: Ant ID {chosen_ant.antID[0]}")
+        else:
+            print("No ants available for brain debug")
+
     def add_ant(self, brain=None, startP=None):
         ant = Ant(self)
         antID = [self.totalCreatedAnts, 0, -1]
@@ -972,7 +1044,7 @@ class AntColony:
             ant.brain = brain
         else:
             antID[1] = 'N'
-            ant.create_brain(random.randint(6, 64)) #much more complicated ant brains maybe is better?
+            ant.create_brain()  # Uses global MIN_BRAIN_SIZE and MAX_BRAIN_SIZE
         ant.antID = antID
         
         #load color
@@ -1000,7 +1072,12 @@ class AntColony:
 
         # Don't place food on high-density terrain (density > half max)
         terrain_density = self.terrainGrid.GetVal(foodX, foodY)
-        if terrain_density not in ([], False, None) and terrain_density > self.maxTerrainDensity / 2:
+        
+        # Don't place food on rock blocks (value -1)
+        if terrain_density == -1:
+            return  # Rock block, no food here
+        
+        if terrain_density not in ([], False, None) and terrain_density > self.maxTerrainDensity / 3:
             return  # Too dense, no food here
         
         # Don't place food near the hive
@@ -1028,19 +1105,17 @@ class AntColony:
             else:
                 self.terrainGrid.RemoveVal(x, y)
 
-    def create_world(self):
-        """Create the world with ants and varied terrain densities"""
-        # Add initial ants
-        for i in range(self.maxAnts):
-            self.add_ant(brain=None, startP=self.hivePos)
+    def _generate_terrain(self):
+        """Generate terrain with patches of similar density using multi-octave noise.
         
-        # Generate terrain with patches of similar density
-        # Uses multi-octave noise for natural-looking terrain with large coherent regions
+        Creates natural-looking terrain with large coherent regions, keeping area 
+        around the hive clear. Used by both create_world() and reset_world().
+        """
         max_d = self.maxTerrainDensity
         
         # Terrain patch size - lower frequency = larger patches
-        # 0.05 means patches roughly 20 tiles wide, 0.02 means ~50 tiles wide
-        patch_frequency = 0.06
+        # 0.09 means patches roughly 11 tiles wide
+        patch_frequency = 0.1
         
         # Random phase offsets for this world (makes each world unique)
         phase_x = random.random() * 1000
@@ -1052,12 +1127,14 @@ class AntColony:
                 dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
                 
                 # Keep area around hive clear (radius 10)
-                if dist_to_hive < 10:
+                if dist_to_hive < 5:
                     continue  # Leave as 0 (open air)
                 
                 # Multi-octave noise for natural terrain patches
                 # Octave 1: Large patches (primary structure)
                 noise1 = math.sin((x + phase_x) * patch_frequency) * math.cos((y + phase_y) * patch_frequency)
+                # Bias more empty
+                noise1 -= 0.3
                 
                 # Octave 2: Medium detail (secondary features)
                 noise2 = math.sin((x + phase_x) * patch_frequency * 2.5) * math.cos((y + phase_y) * patch_frequency * 2.5) * 0.4
@@ -1070,7 +1147,7 @@ class AntColony:
                 
                 # Map noise to density with AMPLIFIED range to create empty and max-density regions
                 # Amplitude > 1 means some regions exceed bounds and get clamped to 0 or max
-                # 1.8 = ~30% truly empty, ~30% at max density
+                # 3.8 = more truly empty and max-density patches
                 amplitude = 3.8
                 density = ((combined_noise + 1.55) / 3.1 * max_d - max_d/2) * amplitude + max_d/2
                 
@@ -1083,6 +1160,113 @@ class AntColony:
                 # Only set non-zero densities (saves memory in sparse grid)
                 if density > 0.5:
                     self.set_terrain(x, y, int(density))
+
+    def _generate_walls(self):
+        """Generate impassable walls to force pathfinding.
+        
+        Creates walls that ants cannot dig through, forcing them to learn 
+        navigation around obstacles rather than brute-forcing straight lines.
+        Includes both a center + pattern and random wall segments.
+        """
+        # Clear zone around hive - don't place walls within this radius
+        hive_clear_radius = 20
+        
+        # Place the + pattern centered on the field
+        center_x = self.width // 2
+        center_y = self.height // 2
+        
+        # Wall dimensions - scale with field size
+        arm_length = min(self.width, self.height) // 4  # Each arm is 1/4 of the smaller dimension
+        wall_thickness = 2  # Walls are 2 tiles thick
+        
+        # Horizontal arm of the +
+        for x in range(center_x - arm_length, center_x + arm_length + 1):
+            for t in range(wall_thickness):
+                y = center_y + t - wall_thickness // 2
+                if 0 <= x < self.width and 0 <= y < self.height:
+                    # Don't place walls too close to hive
+                    dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                    if dist_to_hive > hive_clear_radius:
+                        self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
+        
+        # Vertical arm of the +
+        for y in range(center_y - arm_length, center_y + arm_length + 1):
+            for t in range(wall_thickness):
+                x = center_x + t - wall_thickness // 2
+                if 0 <= x < self.width and 0 <= y < self.height:
+                    # Don't place walls too close to hive
+                    dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                    if dist_to_hive > hive_clear_radius:
+                        self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
+        
+        # Generate random wall segments to break up straight-line paths
+        num_random_walls = 30
+        wall_length_percent = 0.10  # Each wall is ~10% of width or height
+        
+        for _ in range(num_random_walls):
+            # Randomly choose horizontal or vertical orientation
+            is_horizontal = random.random() < 0.5
+            
+            if is_horizontal:
+                # Horizontal wall: long in X, thin in Y
+                wall_length = int(self.width * wall_length_percent)
+                wall_thickness_rand = random.randint(2, 3)
+                
+                # Random starting position (with margin to keep wall in bounds)
+                start_x = random.randint(5, self.width - wall_length - 5)
+                start_y = random.randint(5, self.height - wall_thickness_rand - 5)
+                
+                # Check if this wall would be too close to hive at any point
+                wall_center_x = start_x + wall_length // 2
+                wall_center_y = start_y + wall_thickness_rand // 2
+                dist_to_hive = math.sqrt((wall_center_x - self.hivePos[0])**2 + (wall_center_y - self.hivePos[1])**2)
+                
+                if dist_to_hive > hive_clear_radius + wall_length // 2:
+                    # Place the wall
+                    for x in range(start_x, start_x + wall_length):
+                        for y in range(start_y, start_y + wall_thickness_rand):
+                            if 0 <= x < self.width and 0 <= y < self.height:
+                                # Extra check for each tile distance to hive
+                                tile_dist = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                                if tile_dist > hive_clear_radius:
+                                    self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
+            else:
+                # Vertical wall: thin in X, long in Y
+                wall_length = int(self.height * wall_length_percent)
+                wall_thickness_rand = random.randint(2, 3)
+                
+                # Random starting position (with margin to keep wall in bounds)
+                start_x = random.randint(5, self.width - wall_thickness_rand - 5)
+                start_y = random.randint(5, self.height - wall_length - 5)
+                
+                # Check if this wall would be too close to hive at any point
+                wall_center_x = start_x + wall_thickness_rand // 2
+                wall_center_y = start_y + wall_length // 2
+                dist_to_hive = math.sqrt((wall_center_x - self.hivePos[0])**2 + (wall_center_y - self.hivePos[1])**2)
+                
+                if dist_to_hive > hive_clear_radius + wall_length // 2:
+                    # Place the wall
+                    for x in range(start_x, start_x + wall_thickness_rand):
+                        for y in range(start_y, start_y + wall_length):
+                            if 0 <= x < self.width and 0 <= y < self.height:
+                                # Extra check for each tile distance to hive
+                                tile_dist = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                                if tile_dist > hive_clear_radius:
+                                    self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
+        
+        print(f"  • Walls generated: + pattern at ({center_x}, {center_y}) + {num_random_walls} random walls")
+
+    def create_world(self):
+        """Create the world with ants and varied terrain densities"""
+        # Add initial ants
+        for i in range(self.maxAnts):
+            self.add_ant(brain=None, startP=self.hivePos)
+        
+        # Generate terrain
+        self._generate_terrain()
+        
+        # Generate impassable walls in + pattern
+        self._generate_walls()
     
     def reset_world(self):
         """Reset the world: regenerate terrain, clear pheromones, move hive, reset ants"""
@@ -1102,37 +1286,11 @@ class AntColony:
         self.foodGrid.Clear()
         self.foodSpatialIndex.clear()
         
-        # Regenerate terrain with patches of similar density (same algorithm as create_world)
-        max_d = self.maxTerrainDensity
-        patch_frequency = 0.04
+        # Regenerate terrain using shared helper
+        self._generate_terrain()
         
-        # New random phase for unique terrain pattern
-        phase_x = random.random() * 1000
-        phase_y = random.random() * 1000
-        
-        for x in range(self.width):
-            for y in range(self.height):
-                dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
-                
-                # Keep area around new hive clear
-                if dist_to_hive < 10:
-                    continue
-                
-                # Multi-octave noise for natural terrain patches
-                noise1 = math.sin((x + phase_x) * patch_frequency) * math.cos((y + phase_y) * patch_frequency)
-                noise2 = math.sin((x + phase_x) * patch_frequency * 2.5) * math.cos((y + phase_y) * patch_frequency * 2.5) * 0.4
-                noise3 = math.sin((x + phase_x) * patch_frequency * 6) * math.cos((y + phase_y) * patch_frequency * 6) * 0.15
-                
-                combined_noise = noise1 + noise2 + noise3
-                
-                # Amplified range to create truly empty and max-density regions
-                amplitude = 1.8
-                density = ((combined_noise + 1.55) / 3.1 * max_d - max_d/2) * amplitude + max_d/2
-                density += random.gauss(0, max_d * 0.05)
-                density = max(0, min(max_d, density))
-                
-                if density > 0.5:
-                    self.set_terrain(x, y, int(density))
+        # Regenerate walls
+        self._generate_walls()
         
         # Reset all ants to new hive position
         for ant in self.ants:
@@ -1157,10 +1315,15 @@ class AntColony:
         # print("Repopulating")
         # currentAnts = len(self.ants)
         bestAntNum = len(self.BestAnts)
+        leaderboard_not_full = bestAntNum < 100
         
         if bestAntNum == 0:
             #just make new ants
             while len(self.ants) < self.maxAnts:
+                if self.loadMode and leaderboard_not_full and self.loadedAntBrains:
+                    if random.random() < self.loadedAntInjectChance:
+                        if self._spawn_loaded_ant():
+                            continue
                 self.add_ant(brain=None, startP=self.hivePos)
             return {'ants':len(self.ants), 'probbest':0}
         #sort and trim the best ants to top 50 ants
@@ -1207,13 +1370,24 @@ class AntColony:
             #     probBest = 1-(bestAntScore / 60) # the higher the score, the more likely we add a best ant
             if bestAntScore < 1:
                 probBest = .2
-            elif bestAntScore < 2:
+            elif bestAntScore < 5:
                 probBest = .5
-            elif bestAntScore < 3:
+            elif bestAntScore < 10:
                 probBest = .75
+            elif bestAntScore < 15:
+                probBest = .85
+            elif bestAntScore < 20:
+                probBest = .9
+            elif bestAntScore < 25:
+                probBest = .95
             else:
                 probBest = .99
             
+            if self.loadMode and leaderboard_not_full and self.loadedAntBrains:
+                if random.random() < self.loadedAntInjectChance:
+                    if self._spawn_loaded_ant():
+                        continue
+
             if random.random() >= probBest: # if less than probBest, use evolved ants; otherwise add random
                 self.add_ant(brain=None, startP=self.hivePos)
                 # print("Adding random ant")
@@ -1224,11 +1398,12 @@ class AntColony:
                     # randomInt = random.randint(0, min(5, len(self.BestAnts)-1)) #only pick the top 5 ants
                 
                     # this randInt is also a fractional of the length of the best ants
+                    # Better ranked ants get more clones, but with gentler scaling
                     pickedFraction = randomInt / len(self.BestAnts)
-                    antBonus = 1 - pickedFraction # the higher the fraction, the more likely we add a best ant
-                    antBonus = int(antBonus * 10) #scale the bonus
-                    antBonus = antBonus * antBonus #square the bonus
-                    antBonus = max(1, antBonus) #make sure we add at least one ant
+                    antBonus = 1 - pickedFraction # 1.0 for top ant, 0.0 for bottom ant
+                    # Linear scaling with small boost: top ant gets ~5 clones, bottom gets 1
+                    antBonus = int(1 + antBonus * 4)  # Range: 1 to 5 clones
+                    antBonus = max(1, min(antBonus, 5)) # Clamp between 1-5
                     #fitness
                     aFit = self.BestAnts[randomInt]["fitness"]
                     # print(f'Fitness: {aFit}, AntBonus: {antBonus}')
@@ -1256,14 +1431,37 @@ class AntColony:
 
                 else:
                     #join two parents together
-                    par1 = self.BestAnts[random.randint(0, len(self.BestAnts)-1)]["brain"].copy()
-                    par2 = self.BestAnts[random.randint(0, len(self.BestAnts)-1)]["brain"].copy()
+                    # need to prevent same parent from being chosen twice
+                    # If only 1 best ant, can't do crossover - just clone/mutate instead
+                    if len(self.BestAnts) < 2:
+                        bestPick = self.BestAnts[0]
+                        newBrain = self.MutateBrain(bestPick["brain"].copy())
+                        newAnt = self.add_ant(brain=newBrain, startP=self.hivePos)
+                        newAnt.antID[1] = "M"
+                        continue
+                    
+                    p1Idx = random.randint(0, len(self.BestAnts)-1)
+                    p2Idx = random.randint(0, len(self.BestAnts)-1)
+                    while p1Idx == p2Idx:
+                        p2Idx = random.randint(0, len(self.BestAnts)-1)
+                    par1 = self.BestAnts[p1Idx]["brain"].copy()
+                    par2 = self.BestAnts[p2Idx]["brain"].copy()
                     #select random parts of the brain from each parent
+                    # Use max length to preserve brain complexity, fill missing with random parent choice
                     newBrain = []
-                    for i in range(min(len(par1), len(par2))): # cannot be longer than the shortest brain
-                        if random.random() > 0.5:
+                    maxLen = max(len(par1), len(par2))
+                    for i in range(maxLen):
+                        if i < len(par1) and i < len(par2):
+                            # Both parents have this synapse - pick randomly
+                            if random.random() > 0.5:
+                                newBrain.append(par1[i])
+                            else:
+                                newBrain.append(par2[i])
+                        elif i < len(par1):
+                            # Only par1 has this synapse
                             newBrain.append(par1[i])
                         else:
+                            # Only par2 has this synapse
                             newBrain.append(par2[i])
                     # print(f'Adding new ant from parents')
                     newAnt = self.add_ant(brain=newBrain, startP=self.hivePos)
@@ -1327,6 +1525,11 @@ class AntColony:
                 if distToHive > 25:
                     # Only place food on low-density terrain (density <= half max)
                     terrain_density = self.terrainGrid.GetVal(foodPosRand[0], foodPosRand[1])
+                    
+                    # Skip rock blocks (value -1)
+                    if terrain_density == -1:
+                        continue
+                    
                     if terrain_density in ([], False, None):
                         terrain_density = 0
                     
@@ -1342,14 +1545,46 @@ class AntColony:
 
 
     def MutateBrain(self, brain):
-        """mutate the brain by changing one of the values"""
+        """mutate the brain by changing values and/or structure (add/remove synapses)"""
         if len(self.ants) == 0:
             return brain
-        numChanges = random.randint(1, 12)
-        #make sure less then half brain is changed
-        numChanges = min(numChanges, int(len(brain)/2))
+        
+        # === STRUCTURAL MUTATIONS (add/remove synapses) ===
+        # Uses global MIN_BRAIN_SIZE and MAX_BRAIN_SIZE
+        
+        # 15% chance to add a new synapse (brain growth)
+        if random.random() < 0.15 and len(brain) < MAX_BRAIN_SIZE:
+            # Create a new random synapse
+            src = random.random() > 0.5
+            dest = random.random() > 0.5
+            if src:
+                selectorSrc = random.randint(0, len(self.ants[0].InputSources) - 1)
+            else:
+                selectorSrc = random.randint(0, len(self.ants[0].neurons) - 1)
+            if dest:
+                selectorDst = random.randint(0, len(self.ants[0].OutputDestinations) - 1)
+            else:
+                selectorDst = random.randint(0, len(self.ants[0].neurons) - 1)
+            frc = random.uniform(-1, 1)
+            new_synapse = (src, selectorSrc, selectorDst, frc, dest)
+            
+            # Insert at random position to avoid always adding at end
+            insert_pos = random.randint(0, len(brain))
+            brain.insert(insert_pos, new_synapse)
+        
+        # 10% chance to remove a synapse (brain shrinkage)
+        if random.random() < 0.10 and len(brain) > MIN_BRAIN_SIZE:
+            remove_idx = random.randint(0, len(brain) - 1)
+            brain.pop(remove_idx)
+        
+        # === VALUE MUTATIONS (existing behavior) ===
+        
+        if len(brain) == 0:
+            return brain
+            
+        numChanges = random.randint(1, int(len(brain) * 0.8))  # change up to 80% of the brain
         for i in range(numChanges):
-            idx = random.randint(0, len(brain)-1)
+            idx = random.randint(0, len(brain) - 1)
             src, selectorSrc, selectorDst, frc, dest = brain[idx]
             change = random.randint(0, 4)
             if change == 0:
@@ -1372,7 +1607,9 @@ class AntColony:
                 else:
                     selectorDst = random.randint(0, len(self.ants[0].neurons) - 1)
             elif change == 3:
-                frc = random.uniform(-1, 1)
+                # frc = random.uniform(-1, 1)
+                frc += random.gauss(0, 0.2)  # small random change to the force value
+                frc = max(-1, min(frc, 1))  # clamp the force value between -1 and 1
             elif change == 4:
                 dest = not dest
                 # Re-assign selectorDst based on the new dest value
@@ -1389,7 +1626,7 @@ class AntColony:
         self.hivePos = [random.randint(0, self.width-1), random.randint(0, self.height-1)]
         # first clear all ants and set max ants to 3000
         self.ants = []
-        self.maxAnts = 3000
+        # self.maxAnts = 3000
         # self.create_world()
         
         # Adjuster 1: Introduce completely new random ants (30% of population)
@@ -1502,27 +1739,32 @@ class AntColony:
                 ant.x = self.hivePos[0]
                 ant.y = self.hivePos[1]
                 ant.direction = 0
-            # Check bounds - only true blocking is world edges
+            # Check bounds - world edges and walls are true blocking
             if frontPos[0] < 0 or frontPos[0] >= self.width:
                 ant.blockedFront = True
             elif frontPos[1] < 0 or frontPos[1] >= self.height:
                 ant.blockedFront = True
             else:
-                # Terrain is traversable but has energy cost - not a true block
-                ant.blockedFront = False
+                # Check for impassable walls (WALL_DENSITY = -1)
+                terrain_val = self.terrainGrid.GetVal(frontPos[0], frontPos[1])
+                if terrain_val == self.WALL_DENSITY:
+                    ant.blockedFront = True
+                else:
+                    # Terrain is traversable but has energy cost - not a true block
+                    ant.blockedFront = False
             
             # Find closest food using spatial index - O(f_local) instead of O(r²)
             closestFood = [-1,-1]
-            
+
             # Only search for food if ant is NOT carrying food
             if not ant.carryingFood:
                 aX = int(ant.x)
                 aY = int(ant.y)
                 # Use spatial index for fast nearest-food lookup
                 closestFood = self.foodSpatialIndex.find_nearest(aX, aY, self.foodSearchRadius)
-                      
-            if closestFood != [-1,-1]:
-                ant.ClossestFood = closestFood
+
+            # Always update ClossestFood - reset to [-1,-1] if no food nearby
+            ant.ClossestFood = closestFood
 
             if self.isAtHive(ant):
                 if ant.carryingFood:
@@ -1591,6 +1833,10 @@ class AntColony:
                             ant.carryingFood = True
                             # Record pickup position for navigation fitness
                             ant.foodPickupPos = [int(ant.x), int(ant.y)]
+                            
+                            # Track food eaten position for path mode visualization
+                            if self.pathMode:
+                                self.foodEatenPositions.append([int(ant.x), int(ant.y)])
 
                             # print(f'ant consumed food, food consumed: {ant.FoodConsumed}')
                             if ant.FoodConsumed > self.topFoodFound:
@@ -1640,7 +1886,7 @@ class AntColony:
                     if getCurrentPher == [] or getCurrentPher == None:
                         getCurrentPher = 0
                     newAmmt = getCurrentPher + pheromone_amount
-                    if newAmmt < 10:
+                    if newAmmt < MAX_PHEROMONE:
                         self.foodPheromoneGrid.SetVal(x_pos, y_pos, newAmmt)
                 else:
                     # Ant not carrying food drops nest pheromone (path to nest)
@@ -1648,7 +1894,7 @@ class AntColony:
                     if getCurrentPher == [] or getCurrentPher == None:
                         getCurrentPher = 0
                     newAmmt = getCurrentPher + pheromone_amount
-                    if newAmmt < 10:
+                    if newAmmt < MAX_PHEROMONE:
                         self.nestPheromoneGrid.SetVal(x_pos, y_pos, newAmmt)
                 
                 # Update previous cell position
@@ -1698,9 +1944,10 @@ class AntColony:
         
         # Process dead ants
         for ant in dead_ants:
-            # If debugbrain, pick another ant
+            # If debugbrain ant died, auto-select new ant if debug mode is enabled
             if ant.DebugBrain:
-                self.FollowNextAnt = True
+                if self.brainDebugEnabled:
+                    self.selectNewDebugAnt()
             
             # === DEATH FITNESS CALCULATION ===
             
@@ -1720,7 +1967,23 @@ class AntColony:
             antBrain = ant.brain
             self.totalDeadAnts += 1
             if antFitness > 2:
-                self.BestAnts.append({"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":antFitness})
+                # Check if this brain already exists in BestAnts
+                brain_key = tuple(tuple(gene) for gene in antBrain)
+                existing_idx = None
+                for idx, existing_ant in enumerate(self.BestAnts):
+                    existing_brain_key = tuple(tuple(gene) for gene in existing_ant["brain"])
+                    if brain_key == existing_brain_key:
+                        existing_idx = idx
+                        break
+                
+                if existing_idx is not None:
+                    # Brain already exists - only replace if this one scored higher
+                    if antFitness > self.BestAnts[existing_idx]["fitness"]:
+                        self.BestAnts[existing_idx] = {"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":antFitness}
+                else:
+                    # New brain - add it
+                    self.BestAnts.append({"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":antFitness})
+                
                 # Update top fitness for tracking purposes (not stagnation)
                 if antFitness > self.lastTopFitness:
                     self.lastTopFitness = antFitness
@@ -1729,7 +1992,7 @@ class AntColony:
         #remove old pheromone cells and decay both types
         # Batch pheromone decay every 5 frames for performance
         if self.totalSteps % 5 == 0:
-            decay_rate = 0.1  # Faster decay prevents grid saturation over time
+            decay_rate = 0.02
             
             # Handle nest pheromones
             activeNestPhers = self.nestPheromoneGrid.listActive()
@@ -1814,22 +2077,45 @@ class AntColony:
         # print('update done')
 
 
-    def LoadBestAnts(self, quantity):
-        """load the best ants from a file"""
+    def LoadBestAnts(self, quantity, max_files=25):
+        """load the best ants from a random selection of files
+        
+        Args:
+            quantity: Number of ants to load
+            max_files: Maximum number of JSON files to randomly select (default 5)
+        """
         print("Loading Best Ants")
         bestAntsFound = []
-        #find and load every file you can find. add all ants and select the top 50
         
         searchFolder = 'dataSave'
+        
+        # First, collect all valid JSON file paths
+        all_json_files = []
         for root, dirs, files in os.walk(searchFolder):
             for file in files:
+                # Skip history files - they have a different format
+                if file.endswith('_history.json'):
+                    continue
                 if file.endswith('.json'):
-                    with open(f'{searchFolder}/{file}', 'r') as f:
-                        print(f'Loading: {file}')
-                        data = f.read()
-                        data = json.loads(data)
-                        bestAnts = data["BestAnts"]
-                        bestAntsFound.extend(bestAnts)
+                    all_json_files.append(f'{searchFolder}/{file}')
+        
+        # Randomly select a handful of files
+        if len(all_json_files) > max_files:
+            selected_files = random.sample(all_json_files, max_files)
+            print(f'Randomly selected {max_files} of {len(all_json_files)} available files')
+        else:
+            selected_files = all_json_files
+            print(f'Loading all {len(selected_files)} available files')
+        
+        # Load only the selected files
+        for filepath in selected_files:
+            with open(filepath, 'r') as f:
+                filename = os.path.basename(filepath)
+                print(f'Loading: {filename}')
+                data = f.read()
+                data = json.loads(data)
+                bestAnts = data["BestAnts"]
+                bestAntsFound.extend(bestAnts)
         # Handle missing fitness keys in old data files
         for ant in bestAntsFound:
             if "fitness" not in ant:
@@ -1849,6 +2135,16 @@ class AntColony:
                 freshAnts.append(ant)
         bestAntsFound = freshAnts
 
+        # Cache loaded ant brains for reuse during repopulation
+        valid_loaded_brains = []
+        for ant in bestAntsFound:
+            antBrain = ant.get("brain", [])
+            if isinstance(antBrain, list) and len(antBrain) > 0:
+                if isinstance(antBrain[0], list) and len(antBrain[0]) == 5:
+                    valid_loaded_brains.append(antBrain)
+        self.loadedAntBrains = valid_loaded_brains
+        self.loadMode = True
+
         #randomize best ants
         print(f'Found {len(bestAntsFound)} best ants from files')
         if len(bestAntsFound) > 100:
@@ -1863,16 +2159,21 @@ class AntColony:
 
             loadedAnts = 0
             for i in range(int(quantity)):
-                randomPick = random.randint(0, len(bestAntsFound)-1)
-                antBrain = bestAntsFound[randomPick]["brain"].copy()
-                # print(f'antBrain: {antBrain}')
-                # print(f'antBrainLen: {len(antBrain[0])}')
-                if len(antBrain[0])==5: ## old version onlyhad 3 values
-                    NAnt = self.add_ant(brain=antBrain, startP=self.hivePos)
-                    NAnt.antID[1] = 'L' #loaded ant
+                if self._spawn_loaded_ant():
                     loadedAnts += 1
                 
             print(f'Loaded {loadedAnts} best ants from file')
+
+    def _spawn_loaded_ant(self):
+        if not self.loadedAntBrains:
+            return False
+        randomPick = random.randint(0, len(self.loadedAntBrains) - 1)
+        antBrain = self.loadedAntBrains[randomPick].copy()
+        if not antBrain or not isinstance(antBrain[0], list) or len(antBrain[0]) != 5:
+            return False
+        new_ant = self.add_ant(brain=antBrain, startP=self.hivePos)
+        new_ant.antID[1] = 'L' #loaded ant
+        return True
 
 
     def drawPaths(self, screen, isPi=False):
@@ -1892,26 +2193,26 @@ class AntColony:
         screen.blit(fade, (0, 0))
         if isPi:
             for ant in self.ants:
-                if ant.life <= 1:
-                    if len(ant.posHistory) > 1:
-                        #ant must have eaten one food
-                        if ant.FoodConsumed > 0:
-                            for i in range(len(ant.posHistory) - 1):
-                                p1 = self.WorldToScreen(ant.posHistory[i])
-                                p2 = self.WorldToScreen(ant.posHistory[i + 1])
-                                pygame.draw.line(screen, ant.Color, p1, p2, 1)
-                                
+                if ant.life <= 1 and len(ant.posHistory) > 1:
+                    # Draw path when ant is about to die (Pi mode optimization)
+                    points = [self.WorldToScreen(pos) for pos in ant.posHistory]
+                    pygame.draw.lines(screen, ant.Color, False, points, 1)
         else:
             for ant in self.ants:
                 if len(ant.posHistory) > 1:
-                    # print(f'Ant {ant.antID} has posHistory length: {len(ant.posHistory)}')
-                    #ant must have eaten one food
-                    if ant.FoodConsumed > 0:
-                        # print(f'Ant {ant.antID} drawing path, food consumed: {ant.FoodConsumed}')
-                        for i in range(len(ant.posHistory) - 1):
-                            p1 = self.WorldToScreen(ant.posHistory[i])
-                            p2 = self.WorldToScreen(ant.posHistory[i + 1])
-                            pygame.draw.line(screen, ant.Color, p1, p2, 1)
+                    # Draw all ant paths (regardless of food consumed)
+                    # Use pygame.draw.lines for better performance (single draw call per ant)
+                    points = [self.WorldToScreen(pos) for pos in ant.posHistory]
+                    pygame.draw.lines(screen, ant.Color, False, points, 1)
+        
+        # Draw white '+' markers where food was eaten (draw once, then clear so they fade)
+        for pos in self.foodEatenPositions:
+            screen_pos = self.WorldToScreen(pos)
+            px, py = int(screen_pos[0]), int(screen_pos[1])
+            # Draw small '+' shape (5 pixels each direction)
+            pygame.draw.line(screen, (255, 255, 255), (px - 3, py), (px + 3, py), 1)
+            pygame.draw.line(screen, (255, 255, 255), (px, py - 3), (px, py + 3), 1)
+        self.foodEatenPositions.clear()  # Clear after drawing so they fade out naturally
                         
         timeDelta = time.time() - self.LastSave
         timeDistance = 60 #save every minute
@@ -2010,6 +2311,15 @@ class AntColony:
             ts = int(self.TileSize)
             
             density = terrain[2]
+            
+            # Draw impassable walls in a cold grey color
+            if density == self.WALL_DENSITY:
+                # Dark cold grey base
+                pygame.draw.rect(screen, (40, 80, 88), (tx, ty, ts, ts))
+                # Lighter cold grey border with blue tint
+                pygame.draw.rect(screen, (100, 110, 125), (tx, ty, ts, ts), 1)
+                continue
+            
             if density <= 0:
                 continue
             
@@ -2111,10 +2421,8 @@ class AntColony:
             #     pygame.draw.line(screen, (0, 255, 0), (pxy[0], pxy[1]), (fpxy[0], fpxy[1]))
             if ant.DebugBrain:
                 
-                #draw a hollow arount the ant 20 pixels
-                
-                #delay for 10 milliseconds
-                pygame.time.delay(50)
+                #draw a hollow around the ant 20 pixels
+                # Note: removed delay to prevent FPS drop
                 
                 pygame.draw.circle(screen, (RV,GV,BV), (int(pxy[0]), int(pxy[1])) , 20, width=1)
                 
@@ -2159,39 +2467,98 @@ class AntColony:
                 #make three columns, one for all the optional inputs, one for the neurons and one for the outputs
                 
                 
-                #draw brain drawbrain
+                #draw brain drawbrain - bottom half overlay
             
-                #draw rect box, gray bg
-                pygame.draw.rect(screen, (50,50,50), (self.screenSize[0]-300, self.screenSize[1]-300, 300, 300))
-                #draw circles for the inputs
-                column_1 = 50
-                column_2 = 150
-                column_3 = 250
+                num_inputs = len(ant.InputSources)
+                num_neurons = len(ant.neurons)
+                num_outputs = len(ant.OutputDestinations)
                 
-                offsetX = self.screenSize[0]
+                # Overlay covers bottom half of screen
+                box_height = self.screenSize[1] // 2
+                box_width = self.screenSize[0]
+                box_top = self.screenSize[1] - box_height
                 
-                font = self._get_font(20)  # Cache font outside loop
-                for i in range(len(ant.InputSources)):
-                    pygame.draw.circle(screen, (255, 255, 255), (offsetX-column_3, self.screenSize[1]-250 + i*20), 5)
-                    #put the value of the input in the circle
-                    text = font.render(f'{ant.InputSources[i]()}', True, (255,255,255))
-                    screen.blit(text, (offsetX-column_3, self.screenSize[1]-250 + i*20))
-                    
-                    
-                for i in range(len(ant.neurons)):
-                    pygame.draw.circle(screen, (255, 255, 255), (offsetX-column_2, self.screenSize[1]-250 + i*20), 5)
-                    #put the value of the neuron in the circle
-                    text = font.render(f'{ant.neurons[i]}', True, (255,255,255))
-                    screen.blit(text, (offsetX-column_2, self.screenSize[1]-250 + i*20))
-                    
+                # Draw semi-transparent black background
+                overlay = pygame.Surface((box_width, box_height), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 200))  # Black with 80% opacity
+                screen.blit(overlay, (0, box_top))
                 
-                for i in range(len(ant.OutputDestinations)):
-                    pygame.draw.circle(screen, (255, 255, 255), (offsetX-column_1, self.screenSize[1]-250 + i*20), 5)
-                    #put the value of the output in the circle
-                    text = font.render(f'{ant.OutputDestinations[i]}', True, (255,255,255))
-                    screen.blit(text, (offsetX-column_1, self.screenSize[1]-250 + i*20))
+                # Larger font for readability
+                font = self._get_font(20)
+                font_small = self._get_font(16)
+                
+                # Calculate spacing based on available height
+                padding = 20
+                usable_height = box_height - padding * 2
+                input_spacing = usable_height // num_inputs
+                input_spacing = min(input_spacing, 22)  # Cap spacing
+                
+                # Column positions (absolute x positions)
+                col_inputs = 30                           # Inputs on left
+                col_neurons = self.screenSize[0] // 2     # Neurons in center
+                col_outputs = self.screenSize[0] - 120    # Outputs on right
+                
+                # Input sensor names (fuller names now that we have space)
+                input_names = [
+                    "direction", "prevDir", "blockedF", "foodDir", "foodFront", 
+                    "oscillate", "random", "nestPherF", "foodPherF", "closeFood",
+                    "nestPherL", "nestPherR", "nestPherB", "foodPherL", "foodPherR", 
+                    "foodPherB", "hiveDir", "hiveDist", "carrying",
+                    "terrainF", "terrainL", "terrainR", "terrainB"
+                ]
+                
+                # Helper function: value to red-green color (val from -1 to 1)
+                def value_to_color(val):
+                    # Clamp value to -1 to 1 range
+                    val = max(-1, min(1, val))
+                    # Map -1 to 1 => 0 to 1
+                    normalized = (val + 1) / 2
+                    # Red (0) -> Yellow (0.5) -> Green (1)
+                    if normalized < 0.5:
+                        r = 255
+                        g = int(255 * (normalized * 2))
+                    else:
+                        r = int(255 * (1 - (normalized - 0.5) * 2))
+                        g = 255
+                    return (r, g, 0)
+                
+                # Draw inputs (left column)
+                inputs_start_y = box_top + padding
+                for i in range(num_inputs):
+                    y_pos = inputs_start_y + i * input_spacing
+                    val = ant.InputSources[i]()
+                    dot_color = value_to_color(val)
+                    pygame.draw.circle(screen, dot_color, (col_inputs, y_pos), 5)
+                    name = input_names[i] if i < len(input_names) else f"in{i}"
+                    text = font_small.render(f'{name}: {val:.2f}', True, (255, 255, 255))
+                    screen.blit(text, (col_inputs + 12, y_pos - 8))
+                
+                # Draw neurons (center column) - vertically centered
+                neuron_spacing = 40
+                neurons_total_height = num_neurons * neuron_spacing
+                neuron_start_y = box_top + (box_height - neurons_total_height) // 2
+                for i in range(num_neurons):
+                    y_pos = neuron_start_y + i * neuron_spacing
+                    neuron_val = ant.neurons[i]
+                    dot_color = value_to_color(neuron_val)
+                    pygame.draw.circle(screen, dot_color, (col_neurons, y_pos), 8)
+                    text = font.render(f'N{i}: {neuron_val:.2f}', True, (255, 255, 255))
+                    screen.blit(text, (col_neurons + 15, y_pos - 10))
+                
+                # Draw outputs (right column) - vertically centered
+                output_names = ["MOVE", "TURN"]
+                output_spacing = 50
+                outputs_total_height = num_outputs * output_spacing
+                output_start_y = box_top + (box_height - outputs_total_height) // 2
+                for i in range(num_outputs):
+                    y_pos = output_start_y + i * output_spacing
+                    # Outputs don't have stored values, use neutral color (yellow)
+                    pygame.draw.circle(screen, (255, 255, 0), (col_outputs, y_pos), 8)
+                    name = output_names[i] if i < len(output_names) else f"OUT{i}"
+                    text = font.render(f'{name}', True, (255, 255, 255))
+                    screen.blit(text, (col_outputs + 15, y_pos - 10))
                     
-                #draw the lines between the circles
+                #draw the lines between the circles (synapses) using bezier curves
                 for BR in ant.brain:
                     src = BR[0]
                     srcSel = BR[1]
@@ -2199,135 +2566,229 @@ class AntColony:
                     frc = BR[3]
                     dest = BR[4]
                     
-                    
-                    yPosStart = 0
-                    yPosEnd = 0
                     finalForce = frc
                     
-                    #figure out what column the src and dest are in
-                    if src: # tru if the source is an input not a neuron so column and not column_2 for the input
-                        xStart = column_3
-                        #figure out the y position because we know the number of inputs
-                        yPosStart = srcSel % len(ant.InputSources) * 20
+                    # Calculate start position (source)
+                    if src:  # Source is an input sensor
+                        xStart = col_inputs + 7
+                        src_idx = srcSel % num_inputs
+                        yStart = inputs_start_y + src_idx * input_spacing
+                    else:  # Source is a neuron
+                        xStart = col_neurons + 10
+                        src_idx = srcSel % num_neurons
+                        yStart = neuron_start_y + src_idx * neuron_spacing
+                        finalForce = frc * ant.neurons[src_idx]
+                    
+                    # Calculate end position (destination)
+                    if dest:  # Destination is an output
+                        xEnd = col_outputs - 10
+                        dst_idx = dstSel % num_outputs
+                        yEnd = output_start_y + dst_idx * output_spacing
+                    else:  # Destination is a neuron
+                        xEnd = col_neurons - 10
+                        dst_idx = dstSel % num_neurons
+                        yEnd = neuron_start_y + dst_idx * neuron_spacing
+                    
+                    # Color based on force direction
+                    if finalForce >= 0:
+                        lineColor = (0, 255, 0)  # Green for positive
                     else:
-                        xStart = column_2
-                        yPosStart = srcSel % len(ant.neurons) * 20
-                        finalForce = frc * ant.neurons[srcSel % len(ant.neurons)]
-                    #next figure out if the dest is an output or a neuron, neurons are column_2 and outputs are column_3
-                    if dest:
-                        xEnd = column_3
-                        yPosEnd = dstSel % len(ant.OutputDestinations) * 20
+                        lineColor = (255, 0, 0)  # Red for negative
+                    
+                    # Line thickness based on force magnitude (clamped 1-4)
+                    lineThickness = max(1, min(4, int(abs(finalForce) * 4)))
+                    
+                    # Draw cubic bezier curve with two control points
+                    # Special handling for neuron-to-neuron connections (same column)
+                    is_neuron_to_neuron = (not src) and (not dest)
+                    
+                    if is_neuron_to_neuron:
+                        # Both in neuron column - bow outward to the right
+                        ctrl_offset = 60  # Fixed offset for the bow
+                        ctrl1X = col_neurons + ctrl_offset  # Bow right from source
+                        ctrl1Y = yStart
+                        ctrl2X = col_neurons - ctrl_offset  # Bow right into dest
+                        ctrl2Y = yEnd
                     else:
-                        xEnd = column_1
-                        yPosEnd = dstSel % len(ant.neurons) * 20
+                        # Normal case: different columns
+                        x_dist = abs(xEnd - xStart)
+                        ctrl_offset = max(30, x_dist * 0.4)  # How far the control points extend
+                        direction = 1 if xEnd >= xStart else -1
                         
-                    #green line if frc is positive
-                    lineColor = (0, 255, 0)
-                    #red line if frc is negative
-                    if finalForce < 0:
-                        lineColor = (255, 0, 0)
+                        ctrl1X = xStart + direction * ctrl_offset  # Away from source
+                        ctrl1Y = yStart
+                        ctrl2X = xEnd - direction * ctrl_offset    # Into destination
+                        ctrl2Y = yEnd
+                    
+                    # Generate bezier curve points (cubic bezier)
+                    num_segments = 16
+                    bezier_points = []
+                    for t_idx in range(num_segments + 1):
+                        t = t_idx / num_segments
+                        # Cubic bezier formula: B(t) = (1-t)³P0 + 3(1-t)²tP1 + 3(1-t)t²P2 + t³P3
+                        inv_t = 1 - t
+                        inv_t2 = inv_t * inv_t
+                        inv_t3 = inv_t2 * inv_t
+                        t2 = t * t
+                        t3 = t2 * t
                         
-                    #line thickness is the force
-                    lineThickness = abs(finalForce) * 5
+                        bx = inv_t3 * xStart + 3 * inv_t2 * t * ctrl1X + 3 * inv_t * t2 * ctrl2X + t3 * xEnd
+                        by = inv_t3 * yStart + 3 * inv_t2 * t * ctrl1Y + 3 * inv_t * t2 * ctrl2Y + t3 * yEnd
+                        bezier_points.append((int(bx), int(by)))
                     
-                    if lineThickness > 5:
-                        lineThickness = 5
-                        
-                    xStart = offsetX - xStart
-                    xEnd = offsetX - xEnd
-                    
-                    #draw the line from the src to the neuron or output
-                    # pygame.draw.line(screen, lineColor, (xStart, yPos), (xEnd, yPos))
-                    pygame.draw.line(screen, lineColor, (xStart, self.screenSize[1]-250 + yPosStart), (xEnd, self.screenSize[1]-250 + yPosEnd), int(lineThickness))
-                    
-                    # #draw the line from the src to the neuron or output
-                    # if src:
-                    #     selIdx = srcSel % len(ant.InputSources)
-                    #     destIdx = dstSel % len(ant.neurons)
-                    #     if dest:
-                    #         destIdx = dstSel % len(ant.OutputDestinations)
-                    #         pygame.draw.line(screen, lineColor, (self.screenSize[0]-250, self.screenSize[1]-250 + selIdx*20), (self.screenSize[0]-150, self.screenSize[1]-250 + destIdx*20))
-                    #     else:
-                    #         pygame.draw.line(screen, lineColor, (self.screenSize[0]-250, self.screenSize[1]-250 + selIdx*20), (self.screenSize[0]-150, self.screenSize[1]-250 + destIdx*20));
-                    #     # pygame.draw.line(screen, lineColor, (self.screenSize[0]-250, self.screenSize[1]-250 + selIdx*20), (self.screenSize[0]-150, self.screenSize[1]-250 + destIdx*20))
-                    # else:
-                    #     selIdx = srcSel % len(ant.neurons)
-                    #     destIdx = dstSel % len(ant.neurons)
-                    #     if dest:
-                    #         destIdx = dstSel % len(ant.OutputDestinations)
-                    #         pygame.draw.line(screen, lineColor, (self.screenSize[0]-150, self.screenSize[1]-250 + selIdx*20), (self.screenSize[0]-50, self.screenSize[1]-250 + destIdx*20))
-                    #     else:
-                    #         pygame.draw.line(screen, lineColor, (self.screenSize[0]-150, self.screenSize[1]-250 + selIdx*20), (self.screenSize[0]-150, self.screenSize[1]-250 + destIdx*20))
-                    #     # pygame.draw.line(screen, lineColor, (self.screenSize[0]-150, self.screenSize[1]-250 + selIdx*20), (self.screenSize[0]-150, self.screenSize[1]-250 + destIdx*20))
-                        
-                    
-                
-                   
+                    # Draw the bezier curve
+                    if len(bezier_points) > 1:
+                        pygame.draw.lines(screen, lineColor, False, bezier_points, lineThickness)
 
         # Draw the hive position with a cool spinning shape (draw last to avoid overlap)
         self.drawHive(screen, isPi)
 
-        # Check mouse position to determine if stats should be shown (skip in Pi mode)
+        # Check mouse position to determine if overlays should be shown (skip in Pi mode)
         if not isPi:
             mouse_pos = pygame.mouse.get_pos()
+            screen_width = screen.get_width()
+            screen_height = screen.get_height()
             show_stats = mouse_pos[1] <= 20  # Show stats if mouse is within 20px of top
+            show_timeline = mouse_pos[1] >= screen_height - 20  # Show timeline if mouse is within 20px of bottom
+            show_genome = mouse_pos[0] <= 20  # Show genome if mouse is within 20px of left edge
         else:
             show_stats = False
+            show_timeline = False
+            show_genome = False
 
         if show_stats:
             #show some stats on a box in the left top corner
-            # dataShow = self.BestAnts[:30]
             dataShow = self.BestAnts
             
-            # Draw semi-transparent dark background for legibility
             if len(dataShow) > 0:
-                overlay_height = len(dataShow) * 12 + 15
-                overlay_width = 420
+                # Calculate how many items fit per column
+                row_height = 12
+                padding = 15
+                screen_height = screen.get_height()
+                max_rows_per_column = (screen_height - padding * 2) // row_height
+                max_rows_per_column = max(1, max_rows_per_column)  # At least 1 row
+                
+                # Calculate number of columns needed
+                num_columns = (len(dataShow) + max_rows_per_column - 1) // max_rows_per_column
+                column_width = 380
+                
+                # Draw semi-transparent dark background for legibility
+                overlay_width = num_columns * column_width + 40
+                overlay_height = min(len(dataShow), max_rows_per_column) * row_height + padding
                 overlay = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
-                overlay.fill((0, 0, 0, 153))  # Black with 60% opacity (153/255 ≈ 0.6)
+                overlay.fill((0, 0, 0, 153))  # Black with 60% opacity
                 screen.blit(overlay, (5, 5))
-            
-            #show the top 10
-            for i, ant in enumerate(dataShow):
                 
-                #make a simple brain view string like this T:3:5:.14:F when the array is [(True, 3, 5, .1402042451273, False)]
-                
-                brainStr = ''
-                for BR in ant["brain"]:
-                    src = 'T' if BR[0] else 'F'
-                    srcSel = BR[1]
-                    dstSel = BR[2]
-                    # // round force
-                    frc = round(BR[3], 1)
-                    dest = 'T' if BR[4] else 'F'
-                    brainStr += f'{src}:{srcSel}:{dstSel}:{frc}:{dest} '
-                cloneParent = ant["antID"][2] if ant["antID"][2] != -1 else ''
-                #type to color
+                # Type to color lookup
                 ColorLookup = {"CL":(200, 0, 200), "M":(255, 200, 0), "CH":(0, 200, 0), "N":(255, 0, 0), "EM":(255, 100, 255), "HY":(100, 255, 255)}
-                # ad fitness to the string
-                textV = f'Food: {int(ant["food"]):03} Fitness: {int(ant["fitness"]):03} ID: {ant["antID"][0]:08}, {ant["antID"][1]}, {cloneParent}'
-                # find the ant color and make a small colored box next to the text
-                #ant color fromes from the brain itself
-                
-                antColor = BrainToColor(ant["brain"])
-                
-                antColor = (antColor[0], antColor[1], antColor[2])
-                
-                #color white
-                #clip the text to 50 characters
-                textV = textV[:80]
-                
-                # Use cached monospace font
                 font = self._get_font('mono')
-                # text = font.render(textV, True, (255,255,255))
-                #set color based on the type of ant
-                antType = ant["antID"][1]
-                color = (255, 255, 255)
-                if antType in ColorLookup:
-                    color = ColorLookup[antType]
-                text = font.render(textV, True, color)
-                screen.blit(text, (30, 10 + i*12))
-                pygame.draw.rect(screen, antColor, (10, 10 + i*12, 10, 10))
+                
+                for i, ant in enumerate(dataShow):
+                    # Calculate column and row position
+                    column = i // max_rows_per_column
+                    row = i % max_rows_per_column
+                    
+                    x_offset = 10 + column * column_width
+                    y_pos = 10 + row * row_height
+                    
+                    cloneParent = ant["antID"][2] if ant["antID"][2] != -1 else ''
+                    textV = f'Food:{int(ant["food"]):03} Fit:{int(ant["fitness"]):03} ID:{ant["antID"][0]:06},{ant["antID"][1]},{cloneParent}'
+                    textV = textV[:55]  # Clip text to fit column
+                    
+                    # Get ant color from brain
+                    antColor = BrainToColor(ant["brain"])
+                    antColor = (antColor[0], antColor[1], antColor[2])
+                    
+                    # Set text color based on ant type
+                    antType = ant["antID"][1]
+                    color = (255, 255, 255)
+                    if antType in ColorLookup:
+                        color = ColorLookup[antType]
+                    
+                    text = font.render(textV, True, color)
+                    screen.blit(text, (x_offset + 20, y_pos))
+                    pygame.draw.rect(screen, antColor, (x_offset, y_pos, 10, 10))
+        
+        # Draw timeline overlay if mouse is at bottom edge
+        if show_timeline:
+            self.drawTimelineOverlay(screen, isPi)
+        
+        # Draw genome overlay if mouse is at left edge
+        if show_genome:
+            self.drawGenomeOverlay(screen)
+        
+        # Draw hover info for grid cell under mouse (not in Pi mode, click to show)
+        if not isPi:
+            mouse_pos = pygame.mouse.get_pos()
+            mouse_pressed = pygame.mouse.get_pressed()[0]  # Left mouse button
+            current_time = time.time()
+            
+            # Update click time if mouse is pressed
+            if mouse_pressed:
+                self.hoverClickTime = current_time
+            
+            # Only show if within timeout period after click
+            time_since_click = current_time - self.hoverClickTime
+            if time_since_click < self.hoverTimeout:
+                screen_width = screen.get_width()
+                screen_height = screen.get_height()
+                
+                # Only show if mouse is within screen bounds
+                if 0 <= mouse_pos[0] < screen_width and 0 <= mouse_pos[1] < screen_height:
+                    world_pos = self.ScreenToWorld(mouse_pos)
+                    wx, wy = world_pos
+                    
+                    # Get cell data from all grids
+                    food_val = self.foodGrid.GetVal(wx, wy)
+                    food = food_val if food_val not in ([], False, None) else 0
+                    
+                    nest_pher_val = self.nestPheromoneGrid.GetVal(wx, wy)
+                    nest_pher = nest_pher_val if nest_pher_val not in ([], False, None) else 0
+                    
+                    food_pher_val = self.foodPheromoneGrid.GetVal(wx, wy)
+                    food_pher = food_pher_val if food_pher_val not in ([], False, None) else 0
+                    
+                    terrain_val = self.terrainGrid.GetVal(wx, wy)
+                    if terrain_val in ([], False, None):
+                        terrain = 0
+                        terrain_str = "0"
+                    elif terrain_val == self.WALL_DENSITY:
+                        terrain_str = "WALL"
+                    else:
+                        terrain = terrain_val
+                        terrain_str = str(terrain)
+                    
+                    # Build info lines
+                    info_lines = [
+                        f"Pos: ({wx}, {wy})",
+                        f"Food: {food}",
+                        f"Nest Pher: {nest_pher:.2f}",
+                        f"Food Pher: {food_pher:.2f}",
+                        f"Terrain: {terrain_str}",
+                    ]
+                    
+                    # Calculate box position (offset from mouse, keep on screen)
+                    font = self._get_font(20)
+                    box_width = 140
+                    box_height = len(info_lines) * 18 + 10
+                    box_x = mouse_pos[0] + 15
+                    box_y = mouse_pos[1] + 15
+                    
+                    # Keep box on screen
+                    if box_x + box_width > screen_width:
+                        box_x = mouse_pos[0] - box_width - 5
+                    if box_y + box_height > screen_height:
+                        box_y = mouse_pos[1] - box_height - 5
+                    
+                    # Draw semi-transparent background
+                    overlay = pygame.Surface((box_width, box_height), pygame.SRCALPHA)
+                    overlay.fill((0, 0, 0, 180))
+                    screen.blit(overlay, (box_x, box_y))
+                    
+                    # Draw info text
+                    for i, line in enumerate(info_lines):
+                        text = font.render(line, True, (255, 255, 255))
+                        screen.blit(text, (box_x + 5, box_y + 5 + i * 18))
         
     def drawHive(self, screen, isPi=False):
         """Draw a cool spinning hive visualization"""
@@ -2384,7 +2845,251 @@ class AntColony:
             if sparkle_size > 0:
                 pygame.draw.circle(screen, (255, 255, 255), (int(sparkle_x), int(sparkle_y)), sparkle_size)
 
+    def updateFitnessHistory(self):
+        """Update fitness history for timeline overlay"""
+        if len(self.BestAnts) == 0:
+            return
+        
+        # Sort BestAnts by fitness (highest first)
+        sortedAnts = sorted(self.BestAnts, key=lambda x: x["fitness"], reverse=True)
+        
+        # Take every 10th ant from the best ants (up to 20 ants for performance)
+        selectedAnts = []
+        for i in range(0, min(len(sortedAnts), 200), 10):  # Every 10th ant, max 20 ants
+            ant = sortedAnts[i]
+            antColor = BrainToColor(ant["brain"])
+            selectedAnts.append({
+                "fitness": ant["fitness"],
+                "color": (int(antColor[0]), int(antColor[1]), int(antColor[2])),
+                "step": self.totalSteps
+            })
+        
+        # Add snapshot to history (no limit - keep all history)
+        self.fitnessHistory.append({
+            "step": self.totalSteps,
+            "ants": selectedAnts
+        })
+
+    def drawGenomeOverlay(self, screen):
+        """Draw genome visualization overlay showing top 10 ant brains as pictographic DNA"""
+        if len(self.BestAnts) == 0:
+            return
+        
+        screen_width = screen.get_width()
+        screen_height = screen.get_height()
+        
+        # Get top 10 ants
+        top_ants = self.BestAnts[:10]
+        
+        # Calculate dimensions
+        cell_size = 14  # Size of each cell in the grid
+        col_spacing = 8  # Space between ant columns
+        row_spacing = 2  # Space between synapse rows
+        header_height = 20  # Space for fitness label
+        
+        # Find max synapses across top ants for consistent height
+        max_synapses = max(len(ant["brain"]) for ant in top_ants)
+        
+        # Calculate overlay size
+        ant_column_width = 5 * cell_size + col_spacing
+        overlay_width = len(top_ants) * ant_column_width + 20
+        overlay_height = header_height + max_synapses * (cell_size + row_spacing) + 20
+        
+        # Position overlay on left side
+        overlay_x = 30
+        overlay_y = (screen_height - overlay_height) // 2
+        
+        # Draw semi-transparent dark background
+        overlay_surface = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
+        overlay_surface.fill((0, 0, 0, 200))
+        screen.blit(overlay_surface, (overlay_x, overlay_y))
+        
+        # Get font for labels
+        font = self._get_font(12)
+        
+        # Draw each ant's genome
+        for ant_idx, ant in enumerate(top_ants):
+            brain = ant["brain"]
+            fitness = ant.get("fitness", 0)
+            
+            # Calculate column x position
+            col_x = overlay_x + 10 + ant_idx * ant_column_width
+            
+            # Draw fitness header
+            fit_text = font.render(f'{int(fitness)}', True, (255, 255, 255))
+            screen.blit(fit_text, (col_x + 15, overlay_y + 4))
+            
+            # Draw each synapse row
+            for syn_idx, synapse in enumerate(brain):
+                src = synapse[0]       # bool: True=input, False=neuron
+                srcSel = synapse[1]    # int: selector for source
+                dstSel = synapse[2]    # int: selector for destination
+                frc = synapse[3]       # float: force/weight
+                dest = synapse[4]      # bool: True=output, False=neuron
+                
+                row_y = overlay_y + header_height + syn_idx * (cell_size + row_spacing)
+                
+                # Column 1: Source type (circle: filled=input, empty=neuron)
+                cx = col_x + cell_size // 2
+                cy = row_y + cell_size // 2
+                if src:  # Input source
+                    pygame.draw.circle(screen, (100, 200, 255), (cx, cy), cell_size // 2 - 2)
+                else:  # Neuron source
+                    pygame.draw.circle(screen, (100, 200, 255), (cx, cy), cell_size // 2 - 2, 2)
+                
+                # Column 2: Source selector (colored by value)
+                cx = col_x + cell_size + cell_size // 2
+                # Color based on selector value (cycle through colors)
+                sel_colors = [(255, 100, 100), (255, 200, 100), (255, 255, 100), 
+                              (100, 255, 100), (100, 255, 200), (100, 255, 255),
+                              (100, 200, 255), (100, 100, 255), (200, 100, 255), (255, 100, 200)]
+                src_color = sel_colors[srcSel % len(sel_colors)]
+                # Draw triangle pointing right for source
+                points = [(cx - 4, cy - 5), (cx - 4, cy + 5), (cx + 5, cy)]
+                pygame.draw.polygon(screen, src_color, points)
+                
+                # Column 3: Force/weight (bar showing magnitude and direction)
+                bar_x = col_x + 2 * cell_size + 2
+                bar_width = cell_size - 4
+                bar_height = cell_size - 4
+                bar_y = row_y + 2
+                
+                # Background
+                pygame.draw.rect(screen, (40, 40, 40), (bar_x, bar_y, bar_width, bar_height))
+                
+                # Force bar - green for positive, red for negative
+                normalized_frc = max(-1, min(1, frc))  # Clamp to -1 to 1
+                if normalized_frc >= 0:
+                    fill_width = int(normalized_frc * bar_width)
+                    pygame.draw.rect(screen, (50, 200, 50), (bar_x, bar_y, fill_width, bar_height))
+                else:
+                    fill_width = int(abs(normalized_frc) * bar_width)
+                    pygame.draw.rect(screen, (200, 50, 50), (bar_x + bar_width - fill_width, bar_y, fill_width, bar_height))
+                
+                # Border
+                pygame.draw.rect(screen, (100, 100, 100), (bar_x, bar_y, bar_width, bar_height), 1)
+                
+                # Column 4: Destination selector (colored by value)
+                cx = col_x + 3 * cell_size + cell_size // 2
+                dst_color = sel_colors[dstSel % len(sel_colors)]
+                # Draw triangle pointing left for destination
+                points = [(cx + 4, cy - 5), (cx + 4, cy + 5), (cx - 5, cy)]
+                pygame.draw.polygon(screen, dst_color, points)
+                
+                # Column 5: Destination type (square: filled=output, empty=neuron)
+                sq_x = col_x + 4 * cell_size + 2
+                sq_y = row_y + 2
+                sq_size = cell_size - 4
+                if dest:  # Output destination
+                    pygame.draw.rect(screen, (255, 200, 100), (sq_x, sq_y, sq_size, sq_size))
+                else:  # Neuron destination
+                    pygame.draw.rect(screen, (255, 200, 100), (sq_x, sq_y, sq_size, sq_size), 2)
+            
+            # Draw separator line between ants (except after last)
+            if ant_idx < len(top_ants) - 1:
+                sep_x = col_x + 5 * cell_size + col_spacing // 2
+                pygame.draw.line(screen, (60, 60, 60), 
+                               (sep_x, overlay_y + header_height - 5),
+                               (sep_x, overlay_y + overlay_height - 10), 1)
+        
+        # Draw column header labels
+        label_y = overlay_y + overlay_height - 15
+        labels = ["SRC", "→", "FRC", "←", "DST"]
+        for i, label in enumerate(labels):
+            lx = overlay_x + 10 + i * cell_size + 2
+            label_surface = font.render(label, True, (150, 150, 150))
+            screen.blit(label_surface, (lx, label_y))
+
+    def drawTimelineOverlay(self, screen, isPi=False):
+        """Draw fitness timeline overlay at bottom of screen"""
+        if len(self.fitnessHistory) < 2:
+            return
+        
+        screen_height = screen.get_height()
+        screen_width = screen.get_width()
+        
+        # Timeline dimensions
+        timeline_height = 120
+        timeline_width = screen_width - 20
+        timeline_x = 10
+        timeline_y = screen_height - timeline_height - 10
+        
+        # Draw semi-transparent dark background
+        overlay = pygame.Surface((timeline_width, timeline_height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 153))  # Black with 60% opacity
+        screen.blit(overlay, (timeline_x, timeline_y))
+        
+        # Find min/max fitness for normalization
+        all_fitness_values = []
+        for snapshot in self.fitnessHistory:
+            for ant in snapshot["ants"]:
+                all_fitness_values.append(ant["fitness"])
+        
+        if len(all_fitness_values) == 0:
+            return
+        
+        min_fitness = min(all_fitness_values)
+        max_fitness = max(all_fitness_values)
+        fitness_range = max_fitness - min_fitness
+        
+        if fitness_range == 0:
+            fitness_range = 1  # Prevent division by zero
+        
+        # Draw timeline graph
+        graph_height = timeline_height - 20
+        graph_width = timeline_width - 20
+        graph_x = timeline_x + 10
+        graph_y = timeline_y + 10
+        
+        # Calculate time range
+        if len(self.fitnessHistory) > 1:
+            time_range = self.fitnessHistory[-1]["step"] - self.fitnessHistory[0]["step"]
+            if time_range == 0:
+                time_range = 1
+        else:
+            time_range = 1
+        
+        # Draw fitness lines for each ant position
+        for snapshot_idx, snapshot in enumerate(self.fitnessHistory):
+            if snapshot_idx == 0:
+                continue  # Skip first snapshot (need previous point for line)
+            
+            prev_snapshot = self.fitnessHistory[snapshot_idx - 1]
+            
+            # Calculate x positions for current and previous snapshots
+            curr_time_progress = (snapshot["step"] - self.fitnessHistory[0]["step"]) / time_range
+            prev_time_progress = (prev_snapshot["step"] - self.fitnessHistory[0]["step"]) / time_range
+            
+            curr_x = graph_x + int(curr_time_progress * graph_width)
+            prev_x = graph_x + int(prev_time_progress * graph_width)
+            
+            # Draw lines for each ant (match by position in sorted list)
+            max_ants = min(len(snapshot["ants"]), len(prev_snapshot["ants"]))
+            for ant_idx in range(max_ants):
+                curr_ant = snapshot["ants"][ant_idx]
+                prev_ant = prev_snapshot["ants"][ant_idx]
+                
+                # Normalize fitness to graph coordinates
+                curr_fitness_norm = (curr_ant["fitness"] - min_fitness) / fitness_range
+                prev_fitness_norm = (prev_ant["fitness"] - min_fitness) / fitness_range
+                
+                curr_y = graph_y + graph_height - int(curr_fitness_norm * graph_height)
+                prev_y = graph_y + graph_height - int(prev_fitness_norm * graph_height)
+                
+                # Use current ant's brain color
+                color = curr_ant["color"]
+                
+                # Draw line segment
+                if abs(curr_x - prev_x) > 0 or abs(curr_y - prev_y) > 0:
+                    pygame.draw.line(screen, color, (prev_x, prev_y), (curr_x, curr_y), 2)
+
     def saveData(self):
+        
+        # Update fitness history snapshot when saving
+        self.updateFitnessHistory()
+        
+        # Note: Duplicates are prevented at insertion time in update()
+        # so no cleanup needed here
         
         #check to see if the data chenged from last time
         if self.BestAnts == self.LastBestAnts:
@@ -2412,6 +3117,8 @@ class Game:
         self.isPi = False
         self.drawPaths = False
         self.debugMode = False
+        self.testMode = False
+        self.headlessMode = False
         
         self.maxAnts = 500
         
@@ -2429,6 +3136,8 @@ class Game:
         parser.add_argument('--debug', action='store_true', help='Debug mode')
         parser.add_argument('--scale', type=int, default=2, help='Pixel scale factor for Pi mode (1=full res, 2=half res, etc.)')
         parser.add_argument('--load', action='store_true', help='Load best ants from saved data files')
+        parser.add_argument('--test', action='store_true', help='Test mode: 1 ant, 1 second delay, brain debug enabled')
+        parser.add_argument('--headless', action='store_true', help='Headless mode: no rendering, runs as fast as possible')
         args = parser.parse_args()
         if args.pi:
             self.isPi = True
@@ -2446,6 +3155,14 @@ class Game:
             print('Debug Mode')
             self.debugMode = True
 
+        if args.test:
+            print('Test Mode: 1 ant, 1 second delay, brain debug enabled')
+            self.testMode = True
+            self.maxAnts = 1
+
+        if args.headless:
+            print('Headless Mode: no rendering, running as fast as possible')
+            self.headlessMode = True
         
         # if len(sys.argv) > 1:
         #     print('Arguments: ', sys.argv[1])
@@ -2453,46 +3170,48 @@ class Game:
         #         isPi = True
         #         print('Running on Raspberry Pi')
 
-        pygame.init()
-        
         tileSize = 11  #smaller is slower
-                
-        if self.isPi:
-            print('Starting display on PI')
-            pygame.display.init()
-            pygame.display.list_modes()
-            os.environ["SDL_VIDEODRIVER"] = "rbcon" # or maybe 'fbcon'
-            #set display environment variables
-            os.environ["DISPLAY"] = ":0.0"
-            # Set up display at full screen resolution
-            self.screen = pygame.display.set_mode(self.screenSize, pygame.FULLSCREEN)
-            
-            # Create a smaller render surface for scaled mode
-            # Each logical pixel will be pixelScale x pixelScale screen pixels
-            self.renderSize = (self.screenSize[0] // self.pixelScale, self.screenSize[1] // self.pixelScale)
-            self.renderSurface = pygame.Surface(self.renderSize)
-            print(f'Render size: {self.renderSize} -> scaled to {self.screenSize}')
-            
-            # Initialize Pygame
-            print('Hiding cursor')
-            pygame.mouse.set_visible(False) # Hide cursor here
 
-            self.maxAnts = 80
-            # Adjust tile size for the scaled render resolution
-            # Smaller render surface needs proportionally larger tiles to maintain same grid density
-            tileSize = 25 // self.pixelScale
-            if tileSize < 5:
-                tileSize = 5  # Minimum tile size
-            print(f'Tile size adjusted to: {tileSize}')
-        
-        else:
-            # os.environ["SDL_VIDEO_WINDOW_POS"] = "-1100,0"
-            self.screen = pygame.display.set_mode(self.screenSize)
-            self.renderSize = self.screenSize
-            self.renderSurface = self.screen  # No scaling needed, render directly to screen
+        # Skip pygame initialization in headless mode
+        if not self.headlessMode:
+            pygame.init()
+                    
+            if self.isPi:
+                print('Starting display on PI')
+                pygame.display.init()
+                pygame.display.list_modes()
+                os.environ["SDL_VIDEODRIVER"] = "rbcon" # or maybe 'fbcon'
+                #set display environment variables
+                os.environ["DISPLAY"] = ":0.0"
+                # Set up display at full screen resolution
+                self.screen = pygame.display.set_mode(self.screenSize, pygame.FULLSCREEN)
+                
+                # Create a smaller render surface for scaled mode
+                # Each logical pixel will be pixelScale x pixelScale screen pixels
+                self.renderSize = (self.screenSize[0] // self.pixelScale, self.screenSize[1] // self.pixelScale)
+                self.renderSurface = pygame.Surface(self.renderSize)
+                print(f'Render size: {self.renderSize} -> scaled to {self.screenSize}')
+                
+                # Initialize Pygame
+                print('Hiding cursor')
+                pygame.mouse.set_visible(False) # Hide cursor here
+
+                self.maxAnts = 80
+                # Adjust tile size for the scaled render resolution
+                # Smaller render surface needs proportionally larger tiles to maintain same grid density
+                tileSize = 25 // self.pixelScale
+                if tileSize < 5:
+                    tileSize = 5  # Minimum tile size
+                print(f'Tile size adjusted to: {tileSize}')
             
-            
-        self.clock = pygame.time.Clock()
+            else:
+                # os.environ["SDL_VIDEO_WINDOW_POS"] = "-1100,0"
+                self.screen = pygame.display.set_mode(self.screenSize)
+                self.renderSize = self.screenSize
+                self.renderSurface = self.screen  # No scaling needed, render directly to screen
+                
+                
+            self.clock = pygame.time.Clock()
 
            
         print('Creating Ant Colony')
@@ -2508,37 +3227,43 @@ class Game:
         else:
             print('Starting fresh (use --load to load saved ants)')
 
+        # Enable brain debug mode in test mode
+        if self.testMode:
+            self.antColony.toggleBrainDebug()
+
         #first run update 20000 times
         lastPercent = 0
-        if self.isPi == False:
+        if self.isPi == False and not self.testMode:
             newAnts = 500
             #add new ants before training
             print(f'Adding {newAnts} new random ants')
             for i in range(newAnts):
                 self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
-            numRuns = 0
-            maxFoodFound = 0
-            print('Pre-Training Ants')
-            for i in range(numRuns):
-            # numRuns = 0
-            # while maxFoodFound < 10:
-                # numRuns += 1
-                #print every 10 percent
-                # percentN = int(i/numRuns * 100)
-                # if percentN != lastPercent:
-                if i % 100 == 0:
-                    # print(f'Training: {percentN}%')
-                    print(f'Runs: {i}  MaxFood: {maxFoodFound}')
-                    print(f"Total Dead Ants: {self.antColony.totalDeadAnts}")
-                    # print(f'Time(ms): {self.antColony.UpdateTime * 1000}')
-                    # lastPercent = percentN
-                
-                self.antColony.update()
-                if len(self.antColony.BestAnts) > 0:
-                    maxFoodFound = self.antColony.BestAnts[0]["food"]
-                else:
-                    maxFoodFound = 0
+            # Skip pre-training in headless mode - it will train during run
+            if not self.headlessMode:
+                numRuns = 0
+                maxFoodFound = 0
+                print('Pre-Training Ants')
+                for i in range(numRuns):
+                # numRuns = 0
+                # while maxFoodFound < 10:
+                    # numRuns += 1
+                    #print every 10 percent
+                    # percentN = int(i/numRuns * 100)
+                    # if percentN != lastPercent:
+                    if i % 100 == 0:
+                        # print(f'Training: {percentN}%')
+                        print(f'Runs: {i}  MaxFood: {maxFoodFound}')
+                        print(f"Total Dead Ants: {self.antColony.totalDeadAnts}")
+                        # print(f'Time(ms): {self.antColony.UpdateTime * 1000}')
+                        # lastPercent = percentN
+                    
+                    self.antColony.update()
+                    if len(self.antColony.BestAnts) > 0:
+                        maxFoodFound = self.antColony.BestAnts[0]["food"]
+                    else:
+                        maxFoodFound = 0
         print("Game Ready")
     
     def run(self):
@@ -2559,10 +3284,27 @@ class Game:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                if event.type == pygame.KEYDOWN:
+                    # H key - reduce max ants by 50%
+                    if event.key == pygame.K_h:
+                        self.maxAnts = max(10, self.maxAnts // 2)
+                        self.antColony.maxAnts = self.maxAnts
+                        print(f'Reduced max ants to {self.maxAnts}')
+                    # T key - toggle trail view mode
+                    if event.key == pygame.K_t:
+                        self.drawPaths = not self.drawPaths
+                        self.antColony.pathMode = self.drawPaths
+                        print(f'Trail view mode: {"ON" if self.drawPaths else "OFF"}', flush=True)
+                    # P key - toggle brain debug mode
+                    if event.key == pygame.K_p:
+                        self.antColony.toggleBrainDebug()
 
             #run 5 times between each draw
             #not in pi mode
-            if not self.isPi:
+            if self.testMode:
+                # Test mode: single update per frame
+                self.antColony.update()
+            elif not self.isPi:
                 for i in range(5):
                     self.antColony.update()
             else:
@@ -2637,6 +3379,9 @@ class Game:
 
             if keys[pygame.K_s]:
                 self.antColony.saveData()
+
+            if keys[pygame.K_r]:
+                self.antColony.reset_world()
                 
             if keys[pygame.K_u]:
                 percentDone = 0
@@ -2647,18 +3392,11 @@ class Game:
                         percentDone = nowPercent
                     self.antColony.update()
 
-            # if you hit key R, add 1000 random ants
-            if keys[pygame.K_r]:
-                for i in range(10000):
-                    self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
+            # # if you hit key R, add 1000 random ants
+            # if keys[pygame.K_r]:
+            #     for i in range(10000):
+            #         self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
-            #if p is pressed, pick the next ant to debug the brain
-            if keys[pygame.K_p]:
-                # for ant in self.antColony.ants:
-                #     ant.DebugBrain = False
-                #     break
-                self.antColony.FollowNextAnt = True
-                
             #add key will add 1000 ants
             if keys[pygame.K_a]:
                 #make max ants 1000
@@ -2666,12 +3404,13 @@ class Game:
                 self.antColony.maxAnts = self.maxAnts
                 # for i in range(1000):
                 #     self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
-            
 
             ###
             
-            # Adaptive ant count based on FPS
-            if self.isPi:
+            # Adaptive ant count based on FPS (skip in test mode)
+            if self.testMode:
+                pass  # Keep maxAnts at 1 in test mode
+            elif self.isPi:
                 # Pi mode: target lower FPS, be more aggressive with scaling
                 if fps < 3:
                     self.maxAnts -= 1
@@ -2696,11 +3435,58 @@ class Game:
 
             pygame.display.flip()
             # self.clock.tick(120)
-            self.clock.tick()
+            if self.testMode:
+                self.clock.tick(1)  # 1 FPS = 1 second delay per frame
+            else:
+                self.clock.tick()
 
         pygame.quit()
+
+    def run_headless(self):
+        """Run simulation without rendering - as fast as possible"""
+        print('Running in HEADLESS mode (no rendering)')
+        print('Press Ctrl+C to stop and save')
+        
+        running = True
+        last_report_time = time.time()
+        updates_since_report = 0
+        
+        try:
+            while running:
+                self.antColony.update()
+                updates_since_report += 1
+                
+                # Report progress every 5 seconds
+                current_time = time.time()
+                if current_time - last_report_time >= 5.0:
+                    elapsed = current_time - last_report_time
+                    updates_per_sec = updates_since_report / elapsed
+                    
+                    best_fitness = 0
+                    if len(self.antColony.BestAnts) > 0:
+                        best_fitness = self.antColony.BestAnts[0].get("fitness", 0)
+                    
+                    print(f'[Headless] Steps: {self.antColony.totalSteps} | '
+                          f'Updates/sec: {updates_per_sec:.1f} | '
+                          f'Ants: {len(self.antColony.ants)} | '
+                          f'Leaderboard: {len(self.antColony.BestAnts)} | '
+                          f'Best Fitness: {best_fitness}')
+                    
+                    last_report_time = current_time
+                    updates_since_report = 0
+                    
+        except KeyboardInterrupt:
+            print('\nStopping headless mode...')
+        
+        # Save before exit
+        print('Saving data...')
+        self.antColony.saveData()
+        print('Done.')
 
 if __name__ == "__main__":
     print('Starting Simulation')
     game = Game()
-    game.run()
+    if game.headlessMode:
+        game.run_headless()
+    else:
+        game.run()

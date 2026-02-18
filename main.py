@@ -21,57 +21,35 @@ except ImportError:
     PISUGAR_AVAILABLE = False
 
 # Brain size limits (global constants)
-MIN_BRAIN_SIZE = 6
-MAX_BRAIN_SIZE = 64
+MIN_BRAIN_SIZE = 24
+MAX_BRAIN_SIZE = 128
 
 # Pheromone limits
 MAX_PHEROMONE = 10  # Maximum pheromone value per cell
 
+# Leaderboard size
+MAX_LEADERBOARD_SIZE = 200  # Number of best ants to keep
+
+# Report generation settings
+REPORT_INTERVAL = 10000  # Generate diagnostic report every N steps
+
 
 def BrainToColor(brain):
-    """Convert a brain to a color"""
-    # antColor is based on the FORCE values of the brain
-# average every 3rd value of the brain for red, green, blue
-
-    RV = 0
-    GV = 0
-    BV = 0
-    NcNT = 0
-    for i in range(0, len(brain), 3):
-        if i+2 < len(brain):
-            NcNT += 1
-            RV += abs(brain[i][3])
-            GV += abs(brain[i+1][3])
-            BV += abs(brain[i+2][3])
-        
-    RV = RV / (NcNT) 
-    GV = GV / (NcNT) 
-    BV = BV / (NcNT)
-    RV = RV * 255
-    GV = GV * 255
-    BV = BV * 255
+    """Convert a brain to a color using the force values of the first 3 synapses"""
+    if len(brain) < 3:
+        return [128, 128, 128]
     
-    
-    #need to add some contrast since the average turnes out to be gray
-    contrastAmt = 1.8
-    
-    # multiply by contrast amount and subtract 128
-    RV = RV * contrastAmt - 128
-    GV = GV * contrastAmt - 128
-    BV = BV * contrastAmt - 128
-    
+    # Use the first 3 synapse force values directly for R, G, B
+    RV = abs(brain[0][3]) * 255
+    GV = abs(brain[1][3]) * 255
+    BV = abs(brain[2][3]) * 255
     
     # Limit RGB values to 0-255
-    RV = min(max(RV, 0), 255)
-    GV = min(max(GV, 0), 255)
-    BV = min(max(BV, 0), 255)
-    
+    RV = min(max(int(RV), 0), 255)
+    GV = min(max(int(GV), 0), 255)
+    BV = min(max(int(BV), 0), 255)
     
     return [RV, GV, BV]
-
-
-    
-    # return [RV, GV, BV]
 
 class Ant:
     # Pre-computed trig values for 4 cardinal directions (front, left, right, back)
@@ -113,6 +91,9 @@ class Ant:
         self.prevCellX = -1
         self.prevCellY = -1
 
+        # Simple recurrence - track last outputs
+        self.lastMoveAmount = 0.0  # Last move output (normalized)
+        self.lastTurnAmount = 0.0  # Last turn output (normalized)
 
         #self.InputSources = [ self.getDirection,self.getPdirection, self.getBlockedFront, self.foodDir, self.foodFront, self.oscillate, self.randomNum, self.GetPherFront, self.closeToFood ]
         self.InputSources = [
@@ -125,7 +106,9 @@ class Ant:
             self.isCarryingFood,
             # Terrain density sensors (sense how hard terrain is in each direction)
             self.getTerrainFront, self.getTerrainLeft, 
-            self.getTerrainRight, self.getTerrainBack
+            self.getTerrainRight, self.getTerrainBack,
+            # Recurrence inputs (indices 23, 24) - remember last outputs
+            self.getLastMove, self.getLastTurn
         ]
 
        
@@ -178,7 +161,8 @@ class Ant:
             else:
                 selectorDst = random.randint(0, len(self.neurons) - 1)
             frc = random.uniform(-1, 1)
-            self.brain.append((src, selectorSrc, selectorDst, frc, dest))
+            tanh_frc = math.tanh(frc)  # Pre-cache tanh for performance
+            self.brain.append((src, selectorSrc, selectorDst, frc, dest, tanh_frc))
         self.SetColor()
            
     def SetColor(self):
@@ -240,10 +224,9 @@ class Ant:
         relative_angle = (relative_angle + math.pi) % (2 * math.pi) - math.pi
         self._cached_hive_direction = relative_angle / math.pi
         
-        # Hive distance
-        distance = math.sqrt(dx_hive * dx_hive + dy_hive * dy_hive)
-        max_distance = math.sqrt(self.colony.width**2 + self.colony.height**2)
-        self._cached_hive_distance = 1 - (distance / max_distance)
+        # Hive distance (use pre-cached max_diagonal for performance)
+        distance = math.hypot(dx_hive, dy_hive)
+        self._cached_hive_distance = 1 - (distance / self.colony.max_diagonal)
         
         # Precompute terrain density sensors (normalized 0-1, where 1 = max density)
         # Front
@@ -267,7 +250,7 @@ class Ant:
             ax = int(x + dx * i)
             ay = int(y + dy * i)
             val = self.colony.terrainGrid.GetVal(ax, ay)
-            if val not in ([], False, None):
+            if val not in (0, False, None):
                 # Treat walls as maximum density so ants sense them as impassable
                 if val == self.colony.WALL_DENSITY:
                     total_density += max_density
@@ -285,7 +268,7 @@ class Ant:
             ax = int(x + dx * (i * step))
             ay = int(y + dy * (i * step))
             v = grid.GetVal(ax, ay)
-            if v not in ([], False, None):
+            if v not in (0, False, None):
                 acc += v
         return acc / steps
            
@@ -302,12 +285,12 @@ class Ant:
             currentPos = [self.x, self.y]
         
         # Distance from where food was picked up to the hive
-        pickup_to_hive = math.sqrt((self.foodPickupPos[0] - self.colony.hivePos[0])**2 + 
-                                   (self.foodPickupPos[1] - self.colony.hivePos[1])**2)
+        pickup_to_hive = math.hypot(self.foodPickupPos[0] - self.colony.hivePos[0],
+                                    self.foodPickupPos[1] - self.colony.hivePos[1])
         
         # Distance from current position to the hive
-        current_to_hive = math.sqrt((currentPos[0] - self.colony.hivePos[0])**2 + 
-                                    (currentPos[1] - self.colony.hivePos[1])**2)
+        current_to_hive = math.hypot(currentPos[0] - self.colony.hivePos[0],
+                                     currentPos[1] - self.colony.hivePos[1])
         
         # Progress = how much CLOSER to hive the ant got (positive = moved toward hive)
         progress = pickup_to_hive - current_to_hive
@@ -335,31 +318,42 @@ class Ant:
 
     def RunBrain(self):
         """RunBrain() : run the brain of the ant"""
-        for i in range(len(self.brain)):
-            synapseN = self.brain[i]
-            if self.DebugBrain:
+        # Cache locals for performance
+        brain = self.brain
+        neurons = self.neurons
+        input_sources = self.InputSources
+        output_dests = self.OutputDestinations
+        debug = self.DebugBrain
+        num_inputs = len(input_sources)
+        num_neurons = len(neurons)
+        num_outputs = len(output_dests)
+        
+        for i in range(len(brain)):
+            synapseN = brain[i]
+            if debug:
                 print(f'Synapse: {synapseN}')
             src = synapseN[0]  # true or false if the source is an input
             selectorSrc = synapseN[1]  # the selector value
             selectorDst = synapseN[2]  # the selector value
             frc = synapseN[3]  # the force value
-            dest = 0
             dest = synapseN[4]  # true or false if the destination is an output
+            # Use pre-cached tanh value if available (6th element), otherwise compute
+            normalized_force = synapseN[5] if len(synapseN) > 5 else math.tanh(frc)
      
-            if self.DebugBrain:
+            if debug:
                 print(f'Brain: {i}  src: {"Input" if src else "Neuron Input"}  selectorSrc: {selectorSrc}  selectorDst: {selectorDst}  frc: {frc}  dest: {"Output" if dest else "Neuron Output"}')
             
             if src:
                 # get the value from the input source
-                idx = selectorSrc % len(self.InputSources)
-                val = self.InputSources[idx]()
-                if self.DebugBrain:
-                    print(f'Input: {self.InputSources[idx].__doc__} value: {val}')
+                idx = selectorSrc % num_inputs
+                val = input_sources[idx]()
+                if debug:
+                    print(f'Input: {input_sources[idx].__doc__} value: {val}')
             else:
-                idx = selectorSrc % len(self.neurons)
-                val = self.neurons[idx]
+                idx = selectorSrc % num_neurons
+                val = neurons[idx]
                 
-                if self.DebugBrain:
+                if debug:
                     print(f'Neuron Input: {idx}  value: {val}')
                 
                 # Use tanh activation function for better neural network behavior
@@ -367,42 +361,39 @@ class Ant:
 
 
             
-            if self.DebugBrain:
+            if debug:
                 print(f'val*frc: {val * frc}')
 
-
-            # Normalize force value to prevent extreme outputs
-            normalized_force = math.tanh(frc)
             output_value = val * normalized_force
             
             if dest: # if the destination is an output
                 # set the value to the output destination
-                outIdx = selectorDst % len(self.OutputDestinations)
-                self.OutputDestinations[outIdx](output_value)
-                if self.DebugBrain:
-                    print(f'Output: {self.OutputDestinations[outIdx].__doc__} value: {output_value}')
+                outIdx = selectorDst % num_outputs
+                output_dests[outIdx](output_value)
+                if debug:
+                    print(f'Output: {output_dests[outIdx].__doc__} value: {output_value}')
             else: # if the destination is a neuron
                 # set the value to the neuron with proper bounds
-                outIdx = selectorDst % len(self.neurons)
-                self.neurons[outIdx] += output_value
+                outIdx = selectorDst % num_neurons
+                neurons[outIdx] += output_value
                 
                 # Clamp neuron values to prevent overflow/underflow
-                if self.neurons[outIdx] > 10.0:
-                    self.neurons[outIdx] = 10.0
-                elif self.neurons[outIdx] < -10.0:
-                    self.neurons[outIdx] = -10.0
+                if neurons[outIdx] > 10.0:
+                    neurons[outIdx] = 10.0
+                elif neurons[outIdx] < -10.0:
+                    neurons[outIdx] = -10.0
                     
-                if self.DebugBrain:
-                    print(f'Neuron Output {outIdx} Set to: value: {self.neurons[outIdx]}')
-            if self.DebugBrain:
+                if debug:
+                    print(f'Neuron Output {outIdx} Set to: value: {neurons[outIdx]}')
+            if debug:
                 print('____')
         # self.energy -= 1
-        if self.DebugBrain:
+        if debug:
             print('-------------------------')
         
         # Apply neuron decay to prevent indefinite accumulation
-        for i in range(len(self.neurons)):
-            self.neurons[i] *= 0.9  # 10% decay per brain cycle
+        for i in range(num_neurons):
+            neurons[i] *= 0.9  # 10% decay per brain cycle
 
 
     def randomNum(self):
@@ -467,7 +458,7 @@ class Ant:
             ax = int(self.x + dx * (i*step))
             ay = int(self.y + dy * (i*step))
             v = grid.GetVal(ax, ay)
-            if v not in ([], False, None):
+            if v not in (0, False, None):
                 acc += v
         return acc / steps
 
@@ -537,6 +528,14 @@ class Ant:
         """getTerrainBack() : returns terrain density behind (0-1, higher = harder) """
         return self._cached_terrain_back
 
+    def getLastMove(self):
+        """getLastMove() : returns the last move amount (-1 to 1)"""
+        return self.lastMoveAmount
+
+    def getLastTurn(self):
+        """getLastTurn() : returns the last turn amount (-1 to 1)"""
+        return self.lastTurnAmount
+
     def foodDir(self):
         """foodDir() : returns the direction of the closest food """
         # return the relative direction of the closest food in a value between -1 and 1
@@ -576,6 +575,9 @@ class Ant:
     
     def move(self,amount):
         """move() : move the ant in the direction it is facing """
+        # Store normalized amount for recurrence input
+        self.lastMoveAmount = max(-1.0, min(1.0, amount))
+        
         #limit amount to 5
         if amount > .8:
             amount = .8
@@ -599,8 +601,8 @@ class Ant:
                   
         if self.blockedFront!= False:
             amount = 0
-            self.life -= 1# penalize the ant for hitting a wall
-            #damage the wall at the front of the ant by .1
+            #self.life -= .1# penalize the ant for hitting a wall
+            
             self.turn((random.random() - 0.5) * 0.8)  # ~±0.4 rad
             return  # bail early to avoid adding the forward step
     
@@ -612,28 +614,40 @@ class Ant:
         if self.DebugBrain:
             print(f'addX: {addX}, addY: {addY}')
         
-        self.x += addX
-        self.y += addY
+        newX = self.x + addX
+        newY = self.y + addY
         
         # Clamp position to grid boundaries - prevent ants from escaping
-        if self.x < 0:
-            self.x = 0
-        elif self.x >= self.colony.width:
-            self.x = self.colony.width - 0.01
-        if self.y < 0:
-            self.y = 0
-        elif self.y >= self.colony.height:
-            self.y = self.colony.height - 0.01
+        if newX < 0:
+            newX = 0
+        elif newX >= self.colony.width:
+            newX = self.colony.width - 0.01
+        if newY < 0:
+            newY = 0
+        elif newY >= self.colony.height:
+            newY = self.colony.height - 0.01
+        
+        # Check if destination cell is a wall - reject movement if so
+        destTerrain = self.colony.terrainGrid.GetVal(int(newX), int(newY))
+        if destTerrain == self.colony.WALL_DENSITY:
+            self.turn((random.random() - 0.5) * 0.8)
+            return
+        
+        self.x = newX
+        self.y = newY
         
         if self.DebugBrain:
             print(f'new pos: {self.x}, {self.y}')
         # self.energy -= 1
         
         # set farthest traveled if greater than current
-        self.FarthestTraveled = max(self.FarthestTraveled, math.sqrt((self.x - self.colony.hivePos[0])**2 + (self.y - self.colony.hivePos[1])**2))
+        self.FarthestTraveled = max(self.FarthestTraveled, math.hypot(self.x - self.colony.hivePos[0], self.y - self.colony.hivePos[1]))
     
     def turn(self, direction):
         """turn() : turn the ant in a direction """
+        # Store normalized amount for recurrence input
+        self.lastTurnAmount = max(-1.0, min(1.0, direction))
+        
         self.direction += direction
         # Normalize direction to [0, 2π) using modulo
         self.direction = self.direction % (2 * math.pi)
@@ -753,106 +767,109 @@ class SpatialFoodIndex:
 
 
 class WorldGrid:
+    """
+    A grid to hold stuff like food, walls, pheromones, etc.
+    Uses Python lists for fast single-element access.
+    Maintains an active_cells set for efficient iteration.
+    
+    Empty cells are represented by 0 (numeric zero).
+    Out-of-bounds queries return False for compatibility.
+    """
     def __init__(self, width, height):
-        """ a grid to hold stuff like food, walls, etc """
         self.width = width
         self.height = height
-        self.grid = []
-        for i in range(width):
-            row = []
-            for j in range(height):
-                row.append([])
-            self.grid.append(row)
-        # Track active cells for O(1) listing instead of O(width*height)
+        # Use Python lists - faster for single-element access than NumPy
+        self.grid = [[0] * height for _ in range(width)]
+        # Track active cells for O(k) listing instead of O(width*height)
         self.active_cells = set()
-        return
     
     def RemoveVal(self, x, y):
         """ remove a value from the grid """
-        if x < 0 or x >= len(self.grid):
+        if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return False
-        if y < 0 or y >= len(self.grid[x]):
+        if self.grid[x][y] == 0:
             return False
-        #if itsalready empty, return false
-        if self.grid[x][y] == []:
-            return False
-        self.grid[x][y] = []
+        self.grid[x][y] = 0
         self.active_cells.discard((x, y))
         return True
     
     def DecrementVal(self, x, y, amount=1):
         """ decrement a numeric value from the grid (for food stacking) """
-        if x < 0 or x >= len(self.grid):
-            return False
-        if y < 0 or y >= len(self.grid[x]):
+        if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return False
         
         current_val = self.grid[x][y]
-        if current_val == [] or current_val == 0:
+        if current_val == 0:
             return False
             
         new_val = current_val - amount
         if new_val <= 0:
-            self.grid[x][y] = []
+            self.grid[x][y] = 0
             self.active_cells.discard((x, y))
-            return True
         else:
             self.grid[x][y] = new_val
-            return True
+        return True
     
     def IncrementVal(self, x, y, amount=1):
         """ increment a numeric value in the grid (for food stacking) """
-        if x < 0 or x >= len(self.grid):
+        if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return
-        if y < 0 or y >= len(self.grid[x]):
-            return
-            
-        current_val = self.grid[x][y]
-        if current_val == []:
-            current_val = 0
-            
-        self.grid[x][y] = current_val + amount
+        self.grid[x][y] += amount
         self.active_cells.add((x, y))
     
     def SetVal(self, x, y, val):
-        if x < 0 or x >= len(self.grid):
-            return
-        if y < 0 or y >= len(self.grid[x]):
+        if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return
         self.grid[x][y] = val
         # Track active cells
-        if val and val != [] and val != 0:
+        if val and val != 0:
             self.active_cells.add((x, y))
         else:
             self.active_cells.discard((x, y))
-        return
 
     def GetVal(self, x, y):
-        if x < 0 or x >= len(self.grid):
-            return False
-        if y < 0 or y >= len(self.grid[x]):
+        if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return False
         return self.grid[x][y]
     
     def Clear(self):
-        for i in range(len(self.grid)):
-            for j in range(len(self.grid[i])):
-                self.grid[i][j] = []
+        for row in self.grid:
+            for j in range(len(row)):
+                row[j] = 0
         self.active_cells.clear()
-        return
     
     def listActive(self):
-        """ Return list of active cells - O(active_count) instead of O(width*height) """
+        """ Return list of active cells - O(active_count) """
         return [[x, y, self.grid[x][y]] for x, y in self.active_cells]
     
     def sumValues(self):
-        """ Return total sum of all values in active cells (for counting stacked items) """
+        """ Return total sum of all values in active cells """
         total = 0
         for x, y in self.active_cells:
-            val = self.grid[x][y]
-            if val not in ([], None, False):
-                total += val
+            total += self.grid[x][y]
         return total
+    
+    def decayAll(self, decay_rate):
+        """
+        Decay all active cells by decay_rate.
+        Cells that fall to 0 or below are removed.
+        """
+        if not self.active_cells:
+            return
+        
+        # Decay active cells and track which ones to remove
+        cells_to_remove = []
+        for x, y in self.active_cells:
+            new_val = self.grid[x][y] - decay_rate
+            if new_val <= 0:
+                self.grid[x][y] = 0
+                cells_to_remove.append((x, y))
+            else:
+                self.grid[x][y] = new_val
+        
+        # Remove decayed cells from active set
+        for cell in cells_to_remove:
+            self.active_cells.discard(cell)
 
 class AntColony:
     def __init__(self, _screenSize, _maxAnts, _tileSize):
@@ -873,6 +890,9 @@ class AntColony:
         self.foodPheromoneGrid = WorldGrid(GridSize[0], GridSize[1])  # Dropped by ants carrying food (paths to food)
         self.width = GridSize[0]
         self.height = GridSize[1]
+        
+        # Pre-cached max diagonal distance for sensor calculations (avoid recomputing every frame)
+        self.max_diagonal = math.hypot(self.width, self.height)
         
         # Spatial index for O(1) food lookup instead of O(r²) spiral search
         self.foodSpatialIndex = SpatialFoodIndex(GridSize[0], GridSize[1], bucket_size=10)
@@ -908,6 +928,14 @@ class AntColony:
         
         self.StartTime = time.time()
         
+        # Mutation rate: fraction of synapses to change per mutation (0.0-1.0)
+        self.mutationRate = 0.5
+        
+        # Unique run ID for this simulation instance (used in save filenames)
+        import uuid
+        self.runID = uuid.uuid4().hex[:8]  # 8-character unique ID
+        print(f"Run ID: {self.runID}")
+        
         self.BestAnts = []
         self.LastBestAnts = []
         
@@ -929,7 +957,7 @@ class AntColony:
         
         # Stagnation detection variables
         self.lastLeaderboardChangeStep = 0  # Step when leaderboard last changed
-        self.stagnationThreshold = 100000  # Steps without improvement before triggering evolution adjusters
+        self.stagnationThreshold = 50000  # Steps without improvement before triggering evolution adjusters
         self.lastTopFitness = 0  # Track the best fitness achieved
         self.lastLowestLeaderboardFitness = 0  # Track the lowest fitness on the leaderboard
         
@@ -959,6 +987,9 @@ class AntColony:
         self.hoverClickTime = 0  # Timestamp of last mouse click for hover
         self.hoverTimeout = 3.0  # Seconds to show hover info after click
         
+        # Diagnostic report tracking
+        self.lastReportStep = 0  # Step when last report was generated
+
         self.create_world()
         
                  
@@ -1077,16 +1108,16 @@ class AntColony:
         if terrain_density == -1:
             return  # Rock block, no food here
         
-        if terrain_density not in ([], False, None) and terrain_density > self.maxTerrainDensity / 3:
+        if terrain_density not in (0, False, None) and terrain_density > self.maxTerrainDensity / 3:
             return  # Too dense, no food here
         
         # Don't place food near the hive
-        distToHive = math.sqrt((foodX - self.hivePos[0])**2 + (foodY - self.hivePos[1])**2)
+        distToHive = math.hypot(foodX - self.hivePos[0], foodY - self.hivePos[1])
         if distToHive < 15:
             return
 
         # Check if this is a new food location (not already in grid)
-        was_empty = self.foodGrid.GetVal(foodX, foodY) in ([], 0, False)
+        was_empty = self.foodGrid.GetVal(foodX, foodY) in (0, False)
         
         # Use IncrementVal to stack food instead of SetVal
         self.foodGrid.IncrementVal(foodX, foodY, amount)
@@ -1124,7 +1155,7 @@ class AntColony:
         for x in range(self.width):
             for y in range(self.height):
                 # Calculate distance from hive
-                dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                dist_to_hive = math.hypot(x - self.hivePos[0], y - self.hivePos[1])
                 
                 # Keep area around hive clear (radius 10)
                 if dist_to_hive < 5:
@@ -1166,10 +1197,25 @@ class AntColony:
         
         Creates walls that ants cannot dig through, forcing them to learn 
         navigation around obstacles rather than brute-forcing straight lines.
-        Includes both a center + pattern and random wall segments.
+        Includes perimeter walls, a center + pattern and random wall segments.
         """
         # Clear zone around hive - don't place walls within this radius
-        hive_clear_radius = 20
+        hive_clear_radius = 10
+        
+        # Create perimeter walls (1 tile thick border around the entire map)
+        # Top and bottom edges
+        for x in range(self.width):
+            # Skip if too close to hive
+            if math.hypot(x - self.hivePos[0], 0 - self.hivePos[1]) > hive_clear_radius:
+                self.terrainGrid.SetVal(x, 0, self.WALL_DENSITY)
+            if math.hypot(x - self.hivePos[0], (self.height-1) - self.hivePos[1]) > hive_clear_radius:
+                self.terrainGrid.SetVal(x, self.height - 1, self.WALL_DENSITY)
+        # Left and right edges
+        for y in range(self.height):
+            if math.hypot(0 - self.hivePos[0], y - self.hivePos[1]) > hive_clear_radius:
+                self.terrainGrid.SetVal(0, y, self.WALL_DENSITY)
+            if math.hypot((self.width-1) - self.hivePos[0], y - self.hivePos[1]) > hive_clear_radius:
+                self.terrainGrid.SetVal(self.width - 1, y, self.WALL_DENSITY)
         
         # Place the + pattern centered on the field
         center_x = self.width // 2
@@ -1185,7 +1231,7 @@ class AntColony:
                 y = center_y + t - wall_thickness // 2
                 if 0 <= x < self.width and 0 <= y < self.height:
                     # Don't place walls too close to hive
-                    dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                    dist_to_hive = math.hypot(x - self.hivePos[0], y - self.hivePos[1])
                     if dist_to_hive > hive_clear_radius:
                         self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
         
@@ -1195,12 +1241,13 @@ class AntColony:
                 x = center_x + t - wall_thickness // 2
                 if 0 <= x < self.width and 0 <= y < self.height:
                     # Don't place walls too close to hive
-                    dist_to_hive = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                    dist_to_hive = math.hypot(x - self.hivePos[0], y - self.hivePos[1])
                     if dist_to_hive > hive_clear_radius:
                         self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
         
         # Generate random wall segments to break up straight-line paths
-        num_random_walls = 30
+        # cover 40% of the field with walls
+        num_random_walls = int(self.width * self.height * 0.004)
         wall_length_percent = 0.10  # Each wall is ~10% of width or height
         
         for _ in range(num_random_walls):
@@ -1212,14 +1259,15 @@ class AntColony:
                 wall_length = int(self.width * wall_length_percent)
                 wall_thickness_rand = random.randint(2, 3)
                 
-                # Random starting position (with margin to keep wall in bounds)
-                start_x = random.randint(5, self.width - wall_length - 5)
-                start_y = random.randint(5, self.height - wall_thickness_rand - 5)
+                # Random starting position - allow walls to touch/extend past perimeter
+                # Start can be negative (wall extends from edge) or go to the edge
+                start_x = random.randint(-wall_length // 2, self.width - wall_length // 2)
+                start_y = random.randint(0, self.height - wall_thickness_rand)
                 
                 # Check if this wall would be too close to hive at any point
                 wall_center_x = start_x + wall_length // 2
                 wall_center_y = start_y + wall_thickness_rand // 2
-                dist_to_hive = math.sqrt((wall_center_x - self.hivePos[0])**2 + (wall_center_y - self.hivePos[1])**2)
+                dist_to_hive = math.hypot(wall_center_x - self.hivePos[0], wall_center_y - self.hivePos[1])
                 
                 if dist_to_hive > hive_clear_radius + wall_length // 2:
                     # Place the wall
@@ -1227,7 +1275,7 @@ class AntColony:
                         for y in range(start_y, start_y + wall_thickness_rand):
                             if 0 <= x < self.width and 0 <= y < self.height:
                                 # Extra check for each tile distance to hive
-                                tile_dist = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                                tile_dist = math.hypot(x - self.hivePos[0], y - self.hivePos[1])
                                 if tile_dist > hive_clear_radius:
                                     self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
             else:
@@ -1235,14 +1283,14 @@ class AntColony:
                 wall_length = int(self.height * wall_length_percent)
                 wall_thickness_rand = random.randint(2, 3)
                 
-                # Random starting position (with margin to keep wall in bounds)
-                start_x = random.randint(5, self.width - wall_thickness_rand - 5)
-                start_y = random.randint(5, self.height - wall_length - 5)
+                # Random starting position - allow walls to touch/extend past perimeter
+                start_x = random.randint(0, self.width - wall_thickness_rand)
+                start_y = random.randint(-wall_length // 2, self.height - wall_length // 2)
                 
                 # Check if this wall would be too close to hive at any point
                 wall_center_x = start_x + wall_thickness_rand // 2
                 wall_center_y = start_y + wall_length // 2
-                dist_to_hive = math.sqrt((wall_center_x - self.hivePos[0])**2 + (wall_center_y - self.hivePos[1])**2)
+                dist_to_hive = math.hypot(wall_center_x - self.hivePos[0], wall_center_y - self.hivePos[1])
                 
                 if dist_to_hive > hive_clear_radius + wall_length // 2:
                     # Place the wall
@@ -1250,7 +1298,7 @@ class AntColony:
                         for y in range(start_y, start_y + wall_length):
                             if 0 <= x < self.width and 0 <= y < self.height:
                                 # Extra check for each tile distance to hive
-                                tile_dist = math.sqrt((x - self.hivePos[0])**2 + (y - self.hivePos[1])**2)
+                                tile_dist = math.hypot(x - self.hivePos[0], y - self.hivePos[1])
                                 if tile_dist > hive_clear_radius:
                                     self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
         
@@ -1269,15 +1317,8 @@ class AntColony:
         self._generate_walls()
     
     def reset_world(self):
-        """Reset the world: regenerate terrain, clear pheromones, move hive, reset ants"""
-        print("🌍 WORLD RESET - Regenerating terrain and moving hive...")
-        
-        # Store old hive position for reference
-        old_hive = self.hivePos.copy()
-        
-        # Move hive to new random position
-        self.hivePos = [random.randint(10, self.width-10), random.randint(10, self.height-10)]
-        print(f"  • Hive moved from {old_hive} to {self.hivePos}")
+        """Reset the world: regenerate terrain, clear pheromones, reset ants (hive stays in place)"""
+        print("[WORLD RESET] Regenerating terrain...")
         
         # Clear all grids
         self.terrainGrid.Clear()
@@ -1315,7 +1356,7 @@ class AntColony:
         # print("Repopulating")
         # currentAnts = len(self.ants)
         bestAntNum = len(self.BestAnts)
-        leaderboard_not_full = bestAntNum < 100
+        leaderboard_not_full = bestAntNum < MAX_LEADERBOARD_SIZE
         
         if bestAntNum == 0:
             #just make new ants
@@ -1332,17 +1373,17 @@ class AntColony:
         #sort by fitness now, highest fitness first
         self.BestAnts = sorted(self.BestAnts, key=lambda x: x["fitness"], reverse=True)
         
-        self.BestAnts = self.BestAnts[:100] #only keep the top 100 ants
+        self.BestAnts = self.BestAnts[:MAX_LEADERBOARD_SIZE] #only keep the top ants
         
         # Check if leaderboard has improved by looking at the lowest fitness
         current_lowest_fitness = 0
-        if len(self.BestAnts) >= 100:  # Only check when leaderboard is full
+        if len(self.BestAnts) >= MAX_LEADERBOARD_SIZE:  # Only check when leaderboard is full
             current_lowest_fitness = self.BestAnts[-1]["fitness"]  # Last ant has lowest fitness
             if current_lowest_fitness > self.lastLowestLeaderboardFitness:
                 # Leaderboard has improved - new ants have pushed out weaker ones
                 self.lastLowestLeaderboardFitness = current_lowest_fitness
                 self.lastLeaderboardChangeStep = self.totalSteps
-                print(f"🎯 LEADERBOARD IMPROVED! New minimum fitness: {current_lowest_fitness}")
+                print(f"[LEADERBOARD IMPROVED] New minimum fitness: {current_lowest_fitness}")
         elif len(self.BestAnts) > 0:
             # Leaderboard not full yet, so any addition is progress
             self.lastLeaderboardChangeStep = self.totalSteps
@@ -1520,7 +1561,7 @@ class AntColony:
                     continue
                 if foodPosRand[1] < 0 or foodPosRand[1] >= self.height:
                     continue
-                distToHive = math.sqrt((foodPosRand[0] - self.hivePos[0])**2 + (foodPosRand[1] - self.hivePos[1])**2)
+                distToHive = math.hypot(foodPosRand[0] - self.hivePos[0], foodPosRand[1] - self.hivePos[1])
                
                 if distToHive > 25:
                     # Only place food on low-density terrain (density <= half max)
@@ -1530,7 +1571,7 @@ class AntColony:
                     if terrain_density == -1:
                         continue
                     
-                    if terrain_density in ([], False, None):
+                    if terrain_density in (0, False, None):
                         terrain_density = 0
                     
                     if terrain_density <= self.maxTerrainDensity / 2:
@@ -1566,7 +1607,8 @@ class AntColony:
             else:
                 selectorDst = random.randint(0, len(self.ants[0].neurons) - 1)
             frc = random.uniform(-1, 1)
-            new_synapse = (src, selectorSrc, selectorDst, frc, dest)
+            tanh_frc = math.tanh(frc)  # Pre-cache tanh for performance
+            new_synapse = (src, selectorSrc, selectorDst, frc, dest, tanh_frc)
             
             # Insert at random position to avoid always adding at end
             insert_pos = random.randint(0, len(brain))
@@ -1582,10 +1624,11 @@ class AntColony:
         if len(brain) == 0:
             return brain
             
-        numChanges = random.randint(1, int(len(brain) * 0.8))  # change up to 80% of the brain
+        numChanges = random.randint(1, max(1, int(len(brain) * self.mutationRate)))
         for i in range(numChanges):
             idx = random.randint(0, len(brain) - 1)
-            src, selectorSrc, selectorDst, frc, dest = brain[idx]
+            synapse = brain[idx]
+            src, selectorSrc, selectorDst, frc, dest = synapse[:5]  # Handle both old and new format
             change = random.randint(0, 4)
             if change == 0:
                 src = not src
@@ -1617,16 +1660,16 @@ class AntColony:
                     selectorDst = random.randint(0, len(self.ants[0].OutputDestinations) - 1)
                 else:
                     selectorDst = random.randint(0, len(self.ants[0].neurons) - 1)
-            brain[idx] = (src, selectorSrc, selectorDst, frc, dest)
+            tanh_frc = math.tanh(frc)  # Pre-cache tanh for performance
+            brain[idx] = (src, selectorSrc, selectorDst, frc, dest, tanh_frc)
         return brain
 
     def ApplyEvolutionAdjusters(self):
         """Apply various evolution adjusters to shake up stagnant population"""
-        print("🔄 STAGNATION DETECTED! Applying evolution adjusters...")
-        self.hivePos = [random.randint(0, self.width-1), random.randint(0, self.height-1)]
-        # first clear all ants and set max ants to 3000
+        print("[STAGNATION DETECTED] Applying evolution adjusters...")
+        # first clear all ants
         self.ants = []
-        # self.maxAnts = 3000
+        self.maxAnts = 6000
         # self.create_world()
         
         # Adjuster 1: Introduce completely new random ants (30% of population)
@@ -1667,6 +1710,13 @@ class AntColony:
                 new_ant = self.add_ant(brain=hybrid_brain, startP=self.hivePos)
                 new_ant.antID[1] = "HY"  # Hybrid
         
+        #clear half of the leaderboard
+        if len(self.BestAnts) > 0:
+            print("  • Clearing half of the leaderboard")
+            self.BestAnts = self.BestAnts[:len(self.BestAnts)//2]
+
+
+        # Adjuster 4: Create completely new ants with completely new brains
         # # Adjuster 4: Randomize hive position to force new exploration
         # old_hive = self.hivePos.copy()
         # self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
@@ -1689,7 +1739,7 @@ class AntColony:
 
     def isAtHive(self, ant):
         hiveRadius = 5
-        distToHive = math.sqrt((ant.x - self.hivePos[0])**2 + (ant.y - self.hivePos[1])**2)
+        distToHive = math.hypot(ant.x - self.hivePos[0], ant.y - self.hivePos[1])
         return distToHive < hiveRadius
             
     def update(self):
@@ -1714,12 +1764,12 @@ class AntColony:
            
         startTime = time.time()
         
-        # Precompute all sensor values for all ants once per frame
-        # This eliminates redundant grid lookups and trig calculations during RunBrain()
+        # Single merged loop: precompute sensors + update each ant
+        # (Reduces list iteration overhead vs two separate loops)
         for ant in self.ants:
+            # Precompute sensor values first (eliminates redundant grid lookups in RunBrain)
             ant.precompute_sensors()
-        
-        for ant in self.ants:
+            
             # print(f'Ant: {ant.antID}')
             antPos = (int(ant.x), int(ant.y))
             #normal vector of the direction of the ant
@@ -1777,17 +1827,17 @@ class AntColony:
                     
                     # Bonus based on how far the food was from hive (harder = more reward)
                     if ant.foodPickupPos is not None:
-                        pickup_distance = math.sqrt(
-                            (ant.foodPickupPos[0] - self.hivePos[0])**2 + 
-                            (ant.foodPickupPos[1] - self.hivePos[1])**2
+                        pickup_distance = math.hypot(
+                            ant.foodPickupPos[0] - self.hivePos[0],
+                            ant.foodPickupPos[1] - self.hivePos[1]
                         )
                         # 3 points per tile of distance (rewards far foraging)
                         distance_bonus = int(pickup_distance * 3)
                         ant.fitness += distance_bonus
                         ant.foodPickupPos = None  # Reset for next trip
-                
+            ant.pDirection = float(ant.direction)    
             ant.RunBrain()
-            ant.pDirection = float(ant.direction)
+            
            
            
            
@@ -1795,7 +1845,7 @@ class AntColony:
             if self.pathMode:
                 lastknownPos = ant.posHistory[-1] if len(ant.posHistory) > 0 else [0,0]
          
-                moveDist = math.sqrt((ant.x - lastknownPos[0])**2 + (ant.y - lastknownPos[1])**2)
+                moveDist = math.hypot(ant.x - lastknownPos[0], ant.y - lastknownPos[1])
                 # limited to 1 tile per move to prevent too much history
                 if abs(moveDist) > 1:
                     ant.posHistory.append([ant.x, ant.y])
@@ -1804,14 +1854,28 @@ class AntColony:
                         ant.posHistory = ant.posHistory[-100:]
            ## end history saving
 
-            ant.life -= 1
+            # Life decay - reduced if carrying food and on nest pheromone trail
+            if ant.carryingFood:
+                # Get nest pheromone at current position (helps ants follow trails home)
+                # nest_pher = self.nestPheromoneGrid.GetVal(int(ant.x), int(ant.y))
+                # if nest_pher and nest_pher > 0:
+                #     # Reduce life cost based on pheromone strength (0-10 scale)
+                #     # Strong trail = up to 80% reduction in energy cost
+                #     reduction = min(0.8, nest_pher / MAX_PHEROMONE * 0.8)
+                #     ant.life -= (1 - reduction)
+                # else:
+                #     ant.life -= 1
+
+                ant.life -= 0.25 #for now, just help ants get back to the hive
+            else:
+                ant.life -= 1
 
             
             #check if the ant has a closestFood value, if so detect the distance and if close enough, consume the food
             
             antClosestFood = ant.ClossestFood
             if antClosestFood != [-1,-1]:
-                distToFood = math.sqrt((ant.x - antClosestFood[0])**2 + (ant.y - antClosestFood[1])**2)
+                distToFood = math.hypot(ant.x - antClosestFood[0], ant.y - antClosestFood[1])
                 if distToFood < 1.5: #increased from 1 to handle ant at edge of cell
                     if ant.carryingFood == False: #if the ant is not carrying food force ants to return home to keep eating
 
@@ -1820,7 +1884,7 @@ class AntColony:
                         # print(f'consuming 1 food at {antClosestFood}')
                             # Remove from spatial index if food is now empty at this location
                             remaining_food = self.foodGrid.GetVal(antClosestFood[0], antClosestFood[1])
-                            if remaining_food in ([], 0, False):
+                            if remaining_food in (0, False):
                                 self.foodSpatialIndex.remove(antClosestFood[0], antClosestFood[1])
                             
                             ant.ClossestFood = [-1,-1]
@@ -1883,7 +1947,7 @@ class AntColony:
                 if ant.carryingFood:
                     # Ant carrying food drops food pheromone (path to food)
                     getCurrentPher = self.foodPheromoneGrid.GetVal(x_pos, y_pos)
-                    if getCurrentPher == [] or getCurrentPher == None:
+                    if getCurrentPher in (0, False, None):
                         getCurrentPher = 0
                     newAmmt = getCurrentPher + pheromone_amount
                     if newAmmt < MAX_PHEROMONE:
@@ -1891,11 +1955,16 @@ class AntColony:
                 else:
                     # Ant not carrying food drops nest pheromone (path to nest)
                     getCurrentPher = self.nestPheromoneGrid.GetVal(x_pos, y_pos)
-                    if getCurrentPher == [] or getCurrentPher == None:
+                    if getCurrentPher in (0, False, None):
                         getCurrentPher = 0
                     newAmmt = getCurrentPher + pheromone_amount
                     if newAmmt < MAX_PHEROMONE:
                         self.nestPheromoneGrid.SetVal(x_pos, y_pos, newAmmt)
+                    
+                    # Fitness bonus for following food pheromone trails while foraging
+                    foodPher = self.foodPheromoneGrid.GetVal(x_pos, y_pos)
+                    if foodPher and foodPher > 0:
+                        ant.fitness += 1
                 
                 # Update previous cell position
                 ant.prevCellX = x_pos
@@ -1964,9 +2033,10 @@ class AntColony:
             if foodConsumed > 0:
                 exploration_bonus = min(50, int(ant.FarthestTraveled * 0.5))
                 antFitness += exploration_bonus
+            
             antBrain = ant.brain
             self.totalDeadAnts += 1
-            if antFitness > 2:
+            if foodConsumed >= 1 and antFitness > 10:
                 # Check if this brain already exists in BestAnts
                 brain_key = tuple(tuple(gene) for gene in antBrain)
                 existing_idx = None
@@ -1976,12 +2046,28 @@ class AntColony:
                         existing_idx = idx
                         break
                 
+                # For clones, also check if parent exists on leaderboard by antID
+                parent_idx = None
+                if ant.antID[1] == "CL" and ant.antID[2] != -1:
+                    # This is a clone - look for the parent by ID
+                    parent_id = ant.antID[2]
+                    for idx, existing_ant in enumerate(self.BestAnts):
+                        if existing_ant["antID"][0] == parent_id:
+                            parent_idx = idx
+                            break
+                
                 if existing_idx is not None:
-                    # Brain already exists - only replace if this one scored higher
+                    # Brain already exists - only update fitness if this one scored higher
                     if antFitness > self.BestAnts[existing_idx]["fitness"]:
-                        self.BestAnts[existing_idx] = {"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":antFitness}
+                        self.BestAnts[existing_idx]["fitness"] = antFitness
+                        self.BestAnts[existing_idx]["food"] = foodConsumed
+                elif parent_idx is not None:
+                    # Clone's parent exists - elevate parent's fitness if clone did better
+                    if antFitness > self.BestAnts[parent_idx]["fitness"]:
+                        self.BestAnts[parent_idx]["fitness"] = antFitness
+                        self.BestAnts[parent_idx]["food"] = foodConsumed
                 else:
-                    # New brain - add it
+                    # New brain and no parent on board - add it
                     self.BestAnts.append({"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":antFitness})
                 
                 # Update top fitness for tracking purposes (not stagnation)
@@ -1994,23 +2080,9 @@ class AntColony:
         if self.totalSteps % 5 == 0:
             decay_rate = 0.02
             
-            # Handle nest pheromones
-            activeNestPhers = self.nestPheromoneGrid.listActive()
-            for pher in activeNestPhers:
-                if pher[2] <= 0:
-                    self.nestPheromoneGrid.RemoveVal(pher[0], pher[1])
-                else:
-                    #decay the pheromone
-                    self.nestPheromoneGrid.SetVal(pher[0], pher[1], pher[2] - decay_rate)
-            
-            # Handle food pheromones  
-            activeFoodPhers = self.foodPheromoneGrid.listActive()
-            for pher in activeFoodPhers:
-                if pher[2] <= 0:
-                    self.foodPheromoneGrid.RemoveVal(pher[0], pher[1])
-                else:
-                    #decay the pheromone
-                    self.foodPheromoneGrid.SetVal(pher[0], pher[1], pher[2] - decay_rate)
+            # Vectorized decay for both pheromone grids (much faster than per-cell iteration)
+            self.nestPheromoneGrid.decayAll(decay_rate)
+            self.foodPheromoneGrid.decayAll(decay_rate)
 
         # print('pheromone updated')
         
@@ -2058,18 +2130,21 @@ class AntColony:
             print(f'Best Fitness: {self.lastTopFitness}')
             print(f'Steps Since Leaderboard Change: {steps_since_improvement}/{self.stagnationThreshold}')
             print(f'Current Leaderboard Size: {len(self.BestAnts)}')
-            if len(self.BestAnts) >= 100:
+            if len(self.BestAnts) >= MAX_LEADERBOARD_SIZE:
                 print(f'Lowest Leaderboard Fitness: {self.lastLowestLeaderboardFitness}')
             if self.worldResetInterval > 0:
                 steps_until_reset = self.worldResetInterval - (self.totalSteps - self.lastWorldReset)
                 print(f'Steps Until World Reset: {steps_until_reset}/{self.worldResetInterval}')
             print(f'Update Time: {self.UpdateTime}')
             if "probbest" in repop_result:
-                print(f'Repopulate Probiability of random ant: {repop_result["probbest"]}')
+                print(f'Repopulate Probiability of best ant: {repop_result["probbest"]}')
             print("----------------------------------------")
             #randomize the hive pos
             # self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
 
+        # Generate diagnostic report periodically
+        if REPORT_INTERVAL > 0 and self.totalSteps - self.lastReportStep >= REPORT_INTERVAL:
+            self.generateReport()
 
         # if self.totalSteps % 10000 == 0:
             # self.hivePos = [random.randint(0, self.width), random.randint(0, self.height)]
@@ -2087,7 +2162,7 @@ class AntColony:
         print("Loading Best Ants")
         bestAntsFound = []
         
-        searchFolder = 'dataSave'
+        searchFolder = 'dataSave/best'
         
         # First, collect all valid JSON file paths
         all_json_files = []
@@ -2224,8 +2299,10 @@ class AntColony:
             self.saveData()
             #also save an image of the screen (only if not Pi Mode)
             if isPi == False:
-                tCode = time.strftime("%Y%m%d-%H%M%S")
-                pygame.image.save(screen, f'dataSave/{tCode}.png')
+                # PNG saving disabled for performance
+                # tCode = time.strftime("%Y%m%d-%H%M%S")
+                # pygame.image.save(screen, f'dataSave/{tCode}.png')
+                pass
             
             self.LastSave = time.time()
 
@@ -2300,8 +2377,10 @@ class AntColony:
             self.saveData()
             #also save an image of the screen (only if not Pi Mode)
             if isPi == False:
-                tCode = time.strftime("%Y%m%d-%H%M%S")
-                pygame.image.save(screen, f'dataSave/{tCode}.png')
+                # PNG saving disabled for performance
+                # tCode = time.strftime("%Y%m%d-%H%M%S")
+                # pygame.image.save(screen, f'dataSave/{tCode}.png')
+                pass
             self.LastSave = time.time()
 
         # Draw terrain - simple cyberpunk style (cool gray + cyan accent)
@@ -2643,80 +2722,6 @@ class AntColony:
         # Draw the hive position with a cool spinning shape (draw last to avoid overlap)
         self.drawHive(screen, isPi)
 
-        # Check mouse position to determine if overlays should be shown (skip in Pi mode)
-        if not isPi:
-            mouse_pos = pygame.mouse.get_pos()
-            screen_width = screen.get_width()
-            screen_height = screen.get_height()
-            show_stats = mouse_pos[1] <= 20  # Show stats if mouse is within 20px of top
-            show_timeline = mouse_pos[1] >= screen_height - 20  # Show timeline if mouse is within 20px of bottom
-            show_genome = mouse_pos[0] <= 20  # Show genome if mouse is within 20px of left edge
-        else:
-            show_stats = False
-            show_timeline = False
-            show_genome = False
-
-        if show_stats:
-            #show some stats on a box in the left top corner
-            dataShow = self.BestAnts
-            
-            if len(dataShow) > 0:
-                # Calculate how many items fit per column
-                row_height = 12
-                padding = 15
-                screen_height = screen.get_height()
-                max_rows_per_column = (screen_height - padding * 2) // row_height
-                max_rows_per_column = max(1, max_rows_per_column)  # At least 1 row
-                
-                # Calculate number of columns needed
-                num_columns = (len(dataShow) + max_rows_per_column - 1) // max_rows_per_column
-                column_width = 380
-                
-                # Draw semi-transparent dark background for legibility
-                overlay_width = num_columns * column_width + 40
-                overlay_height = min(len(dataShow), max_rows_per_column) * row_height + padding
-                overlay = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
-                overlay.fill((0, 0, 0, 153))  # Black with 60% opacity
-                screen.blit(overlay, (5, 5))
-                
-                # Type to color lookup
-                ColorLookup = {"CL":(200, 0, 200), "M":(255, 200, 0), "CH":(0, 200, 0), "N":(255, 0, 0), "EM":(255, 100, 255), "HY":(100, 255, 255)}
-                font = self._get_font('mono')
-                
-                for i, ant in enumerate(dataShow):
-                    # Calculate column and row position
-                    column = i // max_rows_per_column
-                    row = i % max_rows_per_column
-                    
-                    x_offset = 10 + column * column_width
-                    y_pos = 10 + row * row_height
-                    
-                    cloneParent = ant["antID"][2] if ant["antID"][2] != -1 else ''
-                    textV = f'Food:{int(ant["food"]):03} Fit:{int(ant["fitness"]):03} ID:{ant["antID"][0]:06},{ant["antID"][1]},{cloneParent}'
-                    textV = textV[:55]  # Clip text to fit column
-                    
-                    # Get ant color from brain
-                    antColor = BrainToColor(ant["brain"])
-                    antColor = (antColor[0], antColor[1], antColor[2])
-                    
-                    # Set text color based on ant type
-                    antType = ant["antID"][1]
-                    color = (255, 255, 255)
-                    if antType in ColorLookup:
-                        color = ColorLookup[antType]
-                    
-                    text = font.render(textV, True, color)
-                    screen.blit(text, (x_offset + 20, y_pos))
-                    pygame.draw.rect(screen, antColor, (x_offset, y_pos, 10, 10))
-        
-        # Draw timeline overlay if mouse is at bottom edge
-        if show_timeline:
-            self.drawTimelineOverlay(screen, isPi)
-        
-        # Draw genome overlay if mouse is at left edge
-        if show_genome:
-            self.drawGenomeOverlay(screen)
-        
         # Draw hover info for grid cell under mouse (not in Pi mode, click to show)
         if not isPi:
             mouse_pos = pygame.mouse.get_pos()
@@ -2740,16 +2745,16 @@ class AntColony:
                     
                     # Get cell data from all grids
                     food_val = self.foodGrid.GetVal(wx, wy)
-                    food = food_val if food_val not in ([], False, None) else 0
+                    food = food_val if food_val not in (0, False, None) else 0
                     
                     nest_pher_val = self.nestPheromoneGrid.GetVal(wx, wy)
-                    nest_pher = nest_pher_val if nest_pher_val not in ([], False, None) else 0
+                    nest_pher = nest_pher_val if nest_pher_val not in (0, False, None) else 0
                     
                     food_pher_val = self.foodPheromoneGrid.GetVal(wx, wy)
-                    food_pher = food_pher_val if food_pher_val not in ([], False, None) else 0
+                    food_pher = food_pher_val if food_pher_val not in (0, False, None) else 0
                     
                     terrain_val = self.terrainGrid.GetVal(wx, wy)
-                    if terrain_val in ([], False, None):
+                    if terrain_val in (0, False, None):
                         terrain = 0
                         terrain_str = "0"
                     elif terrain_val == self.WALL_DENSITY:
@@ -2790,6 +2795,64 @@ class AntColony:
                         text = font.render(line, True, (255, 255, 255))
                         screen.blit(text, (box_x + 5, box_y + 5 + i * 18))
         
+    def drawOverlays(self, screen, isPi=False):
+        """Draw top-ants leaderboard and timeline overlays on top of HUD.
+        Called separately from drawAnts so it can be drawn after the HUD."""
+        if isPi:
+            return
+        
+        mouse_pos = pygame.mouse.get_pos()
+        screen_height = screen.get_height()
+        show_stats = mouse_pos[1] <= 20  # Show stats if mouse is within 20px of top
+        show_timeline = mouse_pos[1] >= screen_height - 20  # Show timeline if mouse is within 20px of bottom
+
+        if show_stats:
+            dataShow = self.BestAnts
+            
+            if len(dataShow) > 0:
+                row_height = 12
+                padding = 15
+                max_rows_per_column = (screen_height - padding * 2) // row_height
+                max_rows_per_column = max(1, max_rows_per_column)
+                
+                num_columns = (len(dataShow) + max_rows_per_column - 1) // max_rows_per_column
+                column_width = 380
+                
+                overlay_width = num_columns * column_width + 40
+                overlay_height = min(len(dataShow), max_rows_per_column) * row_height + padding
+                overlay = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 153))
+                screen.blit(overlay, (5, 5))
+                
+                ColorLookup = {"CL":(200, 0, 200), "M":(255, 200, 0), "CH":(0, 200, 0), "N":(255, 0, 0), "EM":(255, 100, 255), "HY":(100, 255, 255)}
+                font = self._get_font('mono')
+                
+                for i, ant in enumerate(dataShow):
+                    column = i // max_rows_per_column
+                    row = i % max_rows_per_column
+                    
+                    x_offset = 10 + column * column_width
+                    y_pos = 10 + row * row_height
+                    
+                    cloneParent = ant["antID"][2] if ant["antID"][2] != -1 else ''
+                    textV = f'Food:{int(ant["food"]):03} Fit:{int(ant["fitness"]):03} ID:{ant["antID"][0]:06},{ant["antID"][1]},{cloneParent}'
+                    textV = textV[:55]
+                    
+                    antColor = BrainToColor(ant["brain"])
+                    antColor = (antColor[0], antColor[1], antColor[2])
+                    
+                    antType = ant["antID"][1]
+                    color = (255, 255, 255)
+                    if antType in ColorLookup:
+                        color = ColorLookup[antType]
+                    
+                    text = font.render(textV, True, color)
+                    screen.blit(text, (x_offset + 20, y_pos))
+                    pygame.draw.rect(screen, antColor, (x_offset, y_pos, 10, 10))
+        
+        if show_timeline:
+            self.drawTimelineOverlay(screen, isPi)
+
     def drawHive(self, screen, isPi=False):
         """Draw a cool spinning hive visualization"""
         # Convert hive position to screen coordinates
@@ -2869,136 +2932,6 @@ class AntColony:
             "step": self.totalSteps,
             "ants": selectedAnts
         })
-
-    def drawGenomeOverlay(self, screen):
-        """Draw genome visualization overlay showing top 10 ant brains as pictographic DNA"""
-        if len(self.BestAnts) == 0:
-            return
-        
-        screen_width = screen.get_width()
-        screen_height = screen.get_height()
-        
-        # Get top 10 ants
-        top_ants = self.BestAnts[:10]
-        
-        # Calculate dimensions
-        cell_size = 14  # Size of each cell in the grid
-        col_spacing = 8  # Space between ant columns
-        row_spacing = 2  # Space between synapse rows
-        header_height = 20  # Space for fitness label
-        
-        # Find max synapses across top ants for consistent height
-        max_synapses = max(len(ant["brain"]) for ant in top_ants)
-        
-        # Calculate overlay size
-        ant_column_width = 5 * cell_size + col_spacing
-        overlay_width = len(top_ants) * ant_column_width + 20
-        overlay_height = header_height + max_synapses * (cell_size + row_spacing) + 20
-        
-        # Position overlay on left side
-        overlay_x = 30
-        overlay_y = (screen_height - overlay_height) // 2
-        
-        # Draw semi-transparent dark background
-        overlay_surface = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
-        overlay_surface.fill((0, 0, 0, 200))
-        screen.blit(overlay_surface, (overlay_x, overlay_y))
-        
-        # Get font for labels
-        font = self._get_font(12)
-        
-        # Draw each ant's genome
-        for ant_idx, ant in enumerate(top_ants):
-            brain = ant["brain"]
-            fitness = ant.get("fitness", 0)
-            
-            # Calculate column x position
-            col_x = overlay_x + 10 + ant_idx * ant_column_width
-            
-            # Draw fitness header
-            fit_text = font.render(f'{int(fitness)}', True, (255, 255, 255))
-            screen.blit(fit_text, (col_x + 15, overlay_y + 4))
-            
-            # Draw each synapse row
-            for syn_idx, synapse in enumerate(brain):
-                src = synapse[0]       # bool: True=input, False=neuron
-                srcSel = synapse[1]    # int: selector for source
-                dstSel = synapse[2]    # int: selector for destination
-                frc = synapse[3]       # float: force/weight
-                dest = synapse[4]      # bool: True=output, False=neuron
-                
-                row_y = overlay_y + header_height + syn_idx * (cell_size + row_spacing)
-                
-                # Column 1: Source type (circle: filled=input, empty=neuron)
-                cx = col_x + cell_size // 2
-                cy = row_y + cell_size // 2
-                if src:  # Input source
-                    pygame.draw.circle(screen, (100, 200, 255), (cx, cy), cell_size // 2 - 2)
-                else:  # Neuron source
-                    pygame.draw.circle(screen, (100, 200, 255), (cx, cy), cell_size // 2 - 2, 2)
-                
-                # Column 2: Source selector (colored by value)
-                cx = col_x + cell_size + cell_size // 2
-                # Color based on selector value (cycle through colors)
-                sel_colors = [(255, 100, 100), (255, 200, 100), (255, 255, 100), 
-                              (100, 255, 100), (100, 255, 200), (100, 255, 255),
-                              (100, 200, 255), (100, 100, 255), (200, 100, 255), (255, 100, 200)]
-                src_color = sel_colors[srcSel % len(sel_colors)]
-                # Draw triangle pointing right for source
-                points = [(cx - 4, cy - 5), (cx - 4, cy + 5), (cx + 5, cy)]
-                pygame.draw.polygon(screen, src_color, points)
-                
-                # Column 3: Force/weight (bar showing magnitude and direction)
-                bar_x = col_x + 2 * cell_size + 2
-                bar_width = cell_size - 4
-                bar_height = cell_size - 4
-                bar_y = row_y + 2
-                
-                # Background
-                pygame.draw.rect(screen, (40, 40, 40), (bar_x, bar_y, bar_width, bar_height))
-                
-                # Force bar - green for positive, red for negative
-                normalized_frc = max(-1, min(1, frc))  # Clamp to -1 to 1
-                if normalized_frc >= 0:
-                    fill_width = int(normalized_frc * bar_width)
-                    pygame.draw.rect(screen, (50, 200, 50), (bar_x, bar_y, fill_width, bar_height))
-                else:
-                    fill_width = int(abs(normalized_frc) * bar_width)
-                    pygame.draw.rect(screen, (200, 50, 50), (bar_x + bar_width - fill_width, bar_y, fill_width, bar_height))
-                
-                # Border
-                pygame.draw.rect(screen, (100, 100, 100), (bar_x, bar_y, bar_width, bar_height), 1)
-                
-                # Column 4: Destination selector (colored by value)
-                cx = col_x + 3 * cell_size + cell_size // 2
-                dst_color = sel_colors[dstSel % len(sel_colors)]
-                # Draw triangle pointing left for destination
-                points = [(cx + 4, cy - 5), (cx + 4, cy + 5), (cx - 5, cy)]
-                pygame.draw.polygon(screen, dst_color, points)
-                
-                # Column 5: Destination type (square: filled=output, empty=neuron)
-                sq_x = col_x + 4 * cell_size + 2
-                sq_y = row_y + 2
-                sq_size = cell_size - 4
-                if dest:  # Output destination
-                    pygame.draw.rect(screen, (255, 200, 100), (sq_x, sq_y, sq_size, sq_size))
-                else:  # Neuron destination
-                    pygame.draw.rect(screen, (255, 200, 100), (sq_x, sq_y, sq_size, sq_size), 2)
-            
-            # Draw separator line between ants (except after last)
-            if ant_idx < len(top_ants) - 1:
-                sep_x = col_x + 5 * cell_size + col_spacing // 2
-                pygame.draw.line(screen, (60, 60, 60), 
-                               (sep_x, overlay_y + header_height - 5),
-                               (sep_x, overlay_y + overlay_height - 10), 1)
-        
-        # Draw column header labels
-        label_y = overlay_y + overlay_height - 15
-        labels = ["SRC", "→", "FRC", "←", "DST"]
-        for i, label in enumerate(labels):
-            lx = overlay_x + 10 + i * cell_size + 2
-            label_surface = font.render(label, True, (150, 150, 150))
-            screen.blit(label_surface, (lx, label_y))
 
     def drawTimelineOverlay(self, screen, isPi=False):
         """Draw fitness timeline overlay at bottom of screen"""
@@ -3083,6 +3016,28 @@ class AntColony:
                 if abs(curr_x - prev_x) > 0 or abs(curr_y - prev_y) > 0:
                     pygame.draw.line(screen, color, (prev_x, prev_y), (curr_x, curr_y), 2)
 
+    def cullLeaderboard(self):
+        """Remove the bottom 50% of the leaderboard to make room for new ants"""
+        if len(self.BestAnts) < 2:
+            print("Leaderboard too small to cull")
+            return
+        
+        # Sort by fitness (highest first) to ensure we keep the best
+        self.BestAnts = sorted(self.BestAnts, key=lambda x: x["fitness"], reverse=True)
+        
+        # Keep top 50%
+        original_count = len(self.BestAnts)
+        keep_count = original_count // 2
+        self.BestAnts = self.BestAnts[:keep_count]
+        
+        # Reset the lowest leaderboard fitness tracker
+        if len(self.BestAnts) > 0:
+            self.lastLowestLeaderboardFitness = self.BestAnts[-1]["fitness"]
+        else:
+            self.lastLowestLeaderboardFitness = 0
+        
+        print(f"[LEADERBOARD CULLED] Removed {original_count - keep_count} ants, kept top {keep_count}")
+
     def saveData(self):
         
         # Update fitness history snapshot when saving
@@ -3098,17 +3053,246 @@ class AntColony:
         
         self.LastBestAnts = self.BestAnts.copy()
         
-        saveObj = {"BestAnts":self.BestAnts}
+        saveObj = {"BestAnts":self.BestAnts, "runID": self.runID}
         #today Timecode
         tCode = time.strftime("%Y%m%d-%H%M%S")
-        pathSave = f'dataSave/{tCode}.json'
-        print(f'Saving to file: {tCode}.json')
+        filename = f'{self.runID}_{tCode}.json'
+        pathSave = f'dataSave/{filename}'
+        print(f'Saving to file: {filename}')
         try:
             with open(pathSave, 'w') as f:
                 f.write(json.dumps(saveObj, indent=4))
         except Exception as e:
             print(f'Error saving file: {e}')
         return
+
+    def generateReport(self):
+        """Generate a diagnostic report analyzing the leaderboard for stagnation indicators."""
+        
+        if len(self.BestAnts) == 0:
+            print("[REPORT] No ants on leaderboard yet, skipping report")
+            return
+        
+        # Ensure reports folder exists
+        if not os.path.exists('reports'):
+            os.makedirs('reports')
+        
+        # Get a reference ant to access InputSources/OutputDestinations names
+        ref_ant = Ant(self)
+        input_names = [func.__name__ for func in ref_ant.InputSources]
+        output_names = [func.__name__ for func in ref_ant.OutputDestinations]
+        num_neurons = len(ref_ant.neurons)
+        
+        # === FITNESS DISTRIBUTION ===
+        fitnesses = sorted([ant["fitness"] for ant in self.BestAnts])
+        min_fit = fitnesses[0]
+        max_fit = fitnesses[-1]
+        median_fit = fitnesses[len(fitnesses) // 2]
+        q25_fit = fitnesses[len(fitnesses) // 4]
+        q75_fit = fitnesses[3 * len(fitnesses) // 4]
+        avg_fit = sum(fitnesses) / len(fitnesses)
+        
+        # === BRAIN STATISTICS ===
+        brain_sizes = [len(ant["brain"]) for ant in self.BestAnts]
+        avg_brain_size = sum(brain_sizes) / len(brain_sizes)
+        min_brain_size = min(brain_sizes)
+        max_brain_size = max(brain_sizes)
+        
+        # Count hidden neuron usage (synapses that read from or write to hidden neurons)
+        hidden_neuron_usage = []
+        for ant in self.BestAnts:
+            neurons_used = set()
+            for synapse in ant["brain"]:
+                # Handle both old (5-element) and new (6-element) synapse formats
+                src, selectorSrc, selectorDst, frc, dest = synapse[:5]
+                if not src:  # Reading from hidden neuron
+                    neurons_used.add(selectorSrc)
+                if not dest:  # Writing to hidden neuron
+                    neurons_used.add(selectorDst)
+            hidden_neuron_usage.append(len(neurons_used))
+        avg_hidden_neurons = sum(hidden_neuron_usage) / len(hidden_neuron_usage) if hidden_neuron_usage else 0
+        
+        # === SENSOR USAGE (which inputs are connected) ===
+        input_connections = {i: 0 for i in range(len(input_names))}
+        output_connections = {i: 0 for i in range(len(output_names))}
+        
+        for ant in self.BestAnts:
+            inputs_used = set()
+            outputs_used = set()
+            for synapse in ant["brain"]:
+                # Handle both old (5-element) and new (6-element) synapse formats
+                src, selectorSrc, selectorDst, frc, dest = synapse[:5]
+                if src:  # Reading from input
+                    if selectorSrc < len(input_names):
+                        inputs_used.add(selectorSrc)
+                if dest:  # Writing to output
+                    if selectorDst < len(output_names):
+                        outputs_used.add(selectorDst)
+            for inp in inputs_used:
+                input_connections[inp] += 1
+            for out in outputs_used:
+                output_connections[out] += 1
+        
+        # Calculate percentages
+        total_ants = len(self.BestAnts)
+        input_percentages = [(input_names[i], input_connections[i] / total_ants * 100) 
+                            for i in range(len(input_names))]
+        output_percentages = [(output_names[i], output_connections[i] / total_ants * 100) 
+                             for i in range(len(output_names))]
+        
+        # Sort by usage
+        input_percentages.sort(key=lambda x: x[1], reverse=True)
+        output_percentages.sort(key=lambda x: x[1], reverse=True)
+        
+        # === LINEAGE / DIVERSITY ANALYSIS ===
+        # Track unique original ancestors (antID[2] for clones, or antID[0] for originals)
+        ancestor_counts = {}
+        ant_types = {"N": 0, "CL": 0, "M": 0, "CH": 0, "EM": 0, "HY": 0, "L": 0, "other": 0}
+        
+        for ant in self.BestAnts:
+            ant_type = ant["antID"][1]
+            if ant_type in ant_types:
+                ant_types[ant_type] += 1
+            else:
+                ant_types["other"] += 1
+            
+            # For clones, track the parent; for others, track themselves
+            if ant_type == "CL" and ant["antID"][2] != -1:
+                ancestor = ant["antID"][2]
+            else:
+                ancestor = ant["antID"][0]
+            
+            ancestor_counts[ancestor] = ancestor_counts.get(ancestor, 0) + 1
+        
+        unique_ancestors = len(ancestor_counts)
+        
+        # Find most dominant ancestors
+        sorted_ancestors = sorted(ancestor_counts.items(), key=lambda x: x[1], reverse=True)
+        top_ancestors = sorted_ancestors[:5]  # Top 5 ancestors
+        
+        # Calculate diversity index (0-1, higher = more diverse)
+        # Using Simpson's diversity index: 1 - sum((n/N)^2)
+        diversity_index = 1 - sum((count / total_ants) ** 2 for count in ancestor_counts.values())
+        
+        # === BRAIN SIMILARITY (sample comparison) ===
+        # Compare top 10 brains to see how similar they are
+        brain_similarity = 0
+        if len(self.BestAnts) >= 2:
+            comparisons = 0
+            similarities = 0
+            top_brains = self.BestAnts[:min(20, len(self.BestAnts))]
+            for i in range(len(top_brains)):
+                for j in range(i + 1, len(top_brains)):
+                    # Convert synapses to tuples for hashing (JSON loads them as lists)
+                    brain1 = set(tuple(s[:5]) for s in top_brains[i]["brain"])
+                    brain2 = set(tuple(s[:5]) for s in top_brains[j]["brain"])
+                    # Jaccard similarity
+                    intersection = len(brain1 & brain2)
+                    union = len(brain1 | brain2)
+                    if union > 0:
+                        similarities += intersection / union
+                        comparisons += 1
+            brain_similarity = similarities / comparisons if comparisons > 0 else 0
+        
+        # === STAGNATION INDICATORS ===
+        steps_since_improvement = self.totalSteps - self.lastLeaderboardChangeStep
+        stagnation_percent = (steps_since_improvement / self.stagnationThreshold) * 100
+        
+        # === BUILD REPORT ===
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        report_lines = [
+            "=" * 70,
+            f"DIAGNOSTIC REPORT - Run: {self.runID}",
+            f"Generated: {timestamp} | Step: {self.totalSteps:,}",
+            "=" * 70,
+            "",
+            ">>> STAGNATION INDICATORS <<<",
+            f"  Steps since leaderboard improvement: {steps_since_improvement:,} / {self.stagnationThreshold:,} ({stagnation_percent:.1f}%)",
+            f"  Diversity Index: {diversity_index:.3f} (0=all same, 1=all different)",
+            f"  Unique Ancestors: {unique_ancestors} / {total_ants} ants",
+            f"  Brain Similarity (top 20): {brain_similarity:.1%}",
+            "",
+            ">>> FITNESS DISTRIBUTION <<<",
+            f"  Min: {min_fit:,.0f}  |  25%: {q25_fit:,.0f}  |  Median: {median_fit:,.0f}  |  75%: {q75_fit:,.0f}  |  Max: {max_fit:,.0f}",
+            f"  Average: {avg_fit:,.1f}",
+            f"  Fitness Spread (max-min): {max_fit - min_fit:,.0f}",
+            "",
+            ">>> BRAIN STATISTICS <<<",
+            f"  Synapse count: Min={min_brain_size}, Avg={avg_brain_size:.1f}, Max={max_brain_size}",
+            f"  Avg hidden neurons used: {avg_hidden_neurons:.1f} / {num_neurons}",
+            "",
+            ">>> ANT TYPES ON LEADERBOARD <<<",
+            f"  New (N): {ant_types['N']}  |  Clone (CL): {ant_types['CL']}  |  Mutated (M): {ant_types['M']}",
+            f"  Child (CH): {ant_types['CH']}  |  Evo-Mutated (EM): {ant_types['EM']}  |  Hybrid (HY): {ant_types['HY']}",
+            f"  Loaded (L): {ant_types['L']}",
+            "",
+            ">>> SENSOR USAGE (% of ants using each input) <<<",
+        ]
+        
+        # Add input usage (most used first)
+        for name, pct in input_percentages:
+            bar = "#" * int(pct / 5) + "-" * (20 - int(pct / 5))
+            report_lines.append(f"  [{bar}] {pct:5.1f}%  {name}")
+        
+        report_lines.append("")
+        report_lines.append(">>> OUTPUT USAGE (% of ants using each output) <<<")
+        
+        for name, pct in output_percentages:
+            bar = "#" * int(pct / 5) + "-" * (20 - int(pct / 5))
+            report_lines.append(f"  [{bar}] {pct:5.1f}%  {name}")
+        
+        report_lines.append("")
+        report_lines.append(">>> TOP 5 DOMINANT LINEAGES <<<")
+        for i, (ancestor_id, count) in enumerate(top_ancestors, 1):
+            pct = count / total_ants * 100
+            report_lines.append(f"  {i}. Ancestor #{ancestor_id}: {count} ants ({pct:.1f}%)")
+        
+        report_lines.append("")
+        report_lines.append(">>> DIAGNOSIS <<<")
+        
+        # Provide automatic diagnosis
+        issues = []
+        if diversity_index < 0.3:
+            issues.append("LOW DIVERSITY: Population has converged. Consider culling.")
+        if brain_similarity > 0.7:
+            issues.append("HIGH SIMILARITY: Top brains are nearly identical. Need more mutation.")
+        if stagnation_percent > 50:
+            issues.append("STAGNATION WARNING: No improvement in a while. May trigger evolution adjusters soon.")
+        if unique_ancestors < 5:
+            issues.append("FEW ANCESTORS: Only a handful of lineages remain. Diversity is critically low.")
+        
+        # Check sensor neglect
+        neglected_inputs = [name for name, pct in input_percentages if pct < 10]
+        if len(neglected_inputs) > len(input_names) // 2:
+            issues.append(f"SENSOR NEGLECT: {len(neglected_inputs)} inputs used by <10% of ants.")
+        
+        if not issues:
+            report_lines.append("  No major issues detected. Evolution appears healthy.")
+        else:
+            for issue in issues:
+                report_lines.append(f"  [!] {issue}")
+        
+        report_lines.append("")
+        report_lines.append("=" * 70)
+        
+        # Write report to file
+        report_text = "\n".join(report_lines)
+        tCode = time.strftime("%Y%m%d-%H%M%S")
+        filename = f'{self.runID}_report_{tCode}.txt'
+        filepath = f'reports/{filename}'
+        
+        try:
+            with open(filepath, 'w') as f:
+                f.write(report_text)
+            print(f"[REPORT] Generated: {filename}")
+        except Exception as e:
+            print(f"[REPORT] Error writing report: {e}")
+        
+        # Also print a summary to console
+        print(f"[REPORT] Diversity: {diversity_index:.2f} | Unique Ancestors: {unique_ancestors} | Brain Similarity: {brain_similarity:.1%}")
+        
+        self.lastReportStep = self.totalSteps
+
 
 class Game:
     def __init__(self):
@@ -3121,6 +3305,7 @@ class Game:
         self.headlessMode = False
         
         self.maxAnts = 500
+        self.targetFps = 6  # Target FPS for adaptive ant count
         
         # Pixel scaling for Pi mode - each logical pixel becomes NxN screen pixels
         # Set to 1 for normal resolution, 2 for half-res (4 pixels per logical pixel), etc.
@@ -3170,7 +3355,7 @@ class Game:
         #         isPi = True
         #         print('Running on Raspberry Pi')
 
-        tileSize = 11  #smaller is slower
+        tileSize = 8  #smaller is slower
 
         # Skip pygame initialization in headless mode
         if not self.headlessMode:
@@ -3284,6 +3469,18 @@ class Game:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    # Right-click to add food at mouse position
+                    if event.button == 3:  # Right mouse button
+                        mouse_pos = pygame.mouse.get_pos()
+                        world_pos = self.antColony.ScreenToWorld(mouse_pos)
+                        wx, wy = int(world_pos[0]), int(world_pos[1])
+                        # Add food at this position (increment by 5)
+                        if 0 <= wx < self.antColony.width and 0 <= wy < self.antColony.height:
+                            current_food = self.antColony.foodGrid.GetVal(wx, wy)
+                            self.antColony.foodGrid.SetVal(wx, wy, current_food + 5)
+                            self.antColony.foodSpatialIndex.add(wx, wy)
+                            print(f'Added food at ({wx}, {wy}) - now {current_food + 5}')
                 if event.type == pygame.KEYDOWN:
                     # H key - reduce max ants by 50%
                     if event.key == pygame.K_h:
@@ -3298,11 +3495,22 @@ class Game:
                     # P key - toggle brain debug mode
                     if event.key == pygame.K_p:
                         self.antColony.toggleBrainDebug()
+                    # +/= key - increase target FPS
+                    if event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS or event.key == pygame.K_KP_PLUS:
+                        self.targetFps = min(60, self.targetFps + 1)
+                        print(f'Target FPS: {self.targetFps}')
+                    # - key - decrease target FPS
+                    if event.key == pygame.K_MINUS or event.key == pygame.K_KP_MINUS:
+                        self.targetFps = max(1, self.targetFps - 1)
+                        print(f'Target FPS: {self.targetFps}')
+                    # C key - cull bottom 50% of leaderboard
+                    if event.key == pygame.K_c:
+                        self.antColony.cullLeaderboard()
 
             #run 5 times between each draw
             #not in pi mode
-            if self.testMode:
-                # Test mode: single update per frame
+            if self.testMode or self.antColony.brainDebugEnabled:
+                # Test mode or brain debug: single update per frame (don't skip updates)
                 self.antColony.update()
             elif not self.isPi:
                 for i in range(5):
@@ -3328,17 +3536,24 @@ class Game:
                 # Non-Pi mode with separate render surface (shouldn't happen normally)
                 self.screen.blit(self.renderSurface, (0, 0))
             
-            # Draw FPS and Ants count directly on screen (not affected by scaling)
+            # Draw HUD stats in top-left corner (not affected by scaling)
             if not self.drawPaths:
                 font = self.antColony._get_font(26)
-                fps_text = font.render(f'FPS: {fps:.1f}', True, (255, 255, 255))
-                self.screen.blit(fps_text, (self.screenSize[0]-100, 10))
-                ants_text = font.render(f'Ants: {len(self.antColony.ants)}', True, (255, 255, 255))
-                self.screen.blit(ants_text, (self.screenSize[0]-100, 30))
-                # Display total food on field
+                hud_x = 10
+                hud_y = 10
+                fps_text = font.render(f'FPS: {fps:.1f}/{self.targetFps}', True, (255, 255, 255))
+                self.screen.blit(fps_text, (hud_x, hud_y))
+                ants_text = font.render(f'Ants: {len(self.antColony.ants)}/{self.maxAnts}', True, (255, 255, 255))
+                self.screen.blit(ants_text, (hud_x, hud_y + 20))
                 total_food = self.antColony.foodGrid.sumValues()
                 food_text = font.render(f'Food: {total_food}', True, (255, 255, 255))
-                self.screen.blit(food_text, (self.screenSize[0]-100, 50))
+                self.screen.blit(food_text, (hud_x, hud_y + 40))
+                mut_pct = int(self.antColony.mutationRate * 100)
+                mut_text = font.render(f'Mut: {mut_pct}% ([/])', True, (255, 255, 255))
+                self.screen.blit(mut_text, (hud_x, hud_y + 60))
+            
+            # Draw top-ants overlay and timeline on top of HUD
+            self.antColony.drawOverlays(self.screen, isPi=self.isPi)
             
             # Draw battery indicator directly on screen (not affected by scaling)
             # Minimal 20px bar on bottom edge, no text
@@ -3397,6 +3612,12 @@ class Game:
             #     for i in range(10000):
             #         self.antColony.add_ant(brain=None, startP=self.antColony.hivePos)
             
+            # Adjust mutation rate with [ and ] keys
+            if keys[pygame.K_LEFTBRACKET]:
+                self.antColony.mutationRate = max(0.01, round(self.antColony.mutationRate - 0.01, 2))
+            if keys[pygame.K_RIGHTBRACKET]:
+                self.antColony.mutationRate = min(1.0, round(self.antColony.mutationRate + 0.01, 2))
+
             #add key will add 1000 ants
             if keys[pygame.K_a]:
                 #make max ants 1000
@@ -3410,33 +3631,32 @@ class Game:
             # Adaptive ant count based on FPS (skip in test mode)
             if self.testMode:
                 pass  # Keep maxAnts at 1 in test mode
-            elif self.isPi:
-                # Pi mode: target lower FPS, be more aggressive with scaling
-                if fps < 3:
-                    self.maxAnts -= 1
-                    if self.maxAnts < 10:
-                        self.maxAnts = 10
-                elif fps > 8:
-                    self.maxAnts += 1
-                    if self.maxAnts > 200:
-                        self.maxAnts = 200
-                self.antColony.maxAnts = self.maxAnts
             else:
-                # Desktop mode
-                if fps < 2:
-                    self.maxAnts -= 1
-                    print(f'Reducing max ants to {self.maxAnts} for performance')
-                    if self.maxAnts < 100:
-                        self.maxAnts = 100
+                # Calculate deviation from target FPS
+                fps_deviation = fps - self.targetFps
+                deviation_threshold = self.targetFps * 0.2  # 20% tolerance band
+                
+                if fps_deviation < -deviation_threshold:
+                    # FPS too low - reduce ants proportionally
+                    reduction = max(1, int(abs(fps_deviation) * 0.5))
+                    self.maxAnts -= reduction
+                    min_ants = 10 if self.isPi else 100
+                    if self.maxAnts < min_ants:
+                        self.maxAnts = min_ants
                     self.antColony.maxAnts = self.maxAnts
-                elif fps > 10:
-                    self.maxAnts += 1
+                elif fps_deviation > deviation_threshold:
+                    # FPS too high - add ants proportionally
+                    addition = max(1, int(fps_deviation * 0.5))
+                    self.maxAnts += addition
+                    max_ants = 200 if self.isPi else 10000
+                    if self.maxAnts > max_ants:
+                        self.maxAnts = max_ants
                     self.antColony.maxAnts = self.maxAnts
 
             pygame.display.flip()
             # self.clock.tick(120)
-            if self.testMode:
-                self.clock.tick(1)  # 1 FPS = 1 second delay per frame
+            if self.testMode or self.antColony.brainDebugEnabled:
+                self.clock.tick(1)  # 1 FPS = 1 second delay per frame for debugging
             else:
                 self.clock.tick()
 
@@ -3449,6 +3669,7 @@ class Game:
         
         running = True
         last_report_time = time.time()
+        last_save_time = time.time()
         updates_since_report = 0
         
         try:
@@ -3456,8 +3677,9 @@ class Game:
                 self.antColony.update()
                 updates_since_report += 1
                 
-                # Report progress every 5 seconds
                 current_time = time.time()
+                
+                # Report progress every 5 seconds
                 if current_time - last_report_time >= 5.0:
                     elapsed = current_time - last_report_time
                     updates_per_sec = updates_since_report / elapsed
@@ -3470,13 +3692,22 @@ class Game:
                           f'Updates/sec: {updates_per_sec:.1f} | '
                           f'Ants: {len(self.antColony.ants)} | '
                           f'Leaderboard: {len(self.antColony.BestAnts)} | '
-                          f'Best Fitness: {best_fitness}')
+                          f'Best Fitness: {best_fitness}', flush=True)
                     
                     last_report_time = current_time
                     updates_since_report = 0
+                
+                # Auto-save every 60 seconds
+                if current_time - last_save_time >= 60.0:
+                    self.antColony.saveData()
+                    last_save_time = current_time
                     
         except KeyboardInterrupt:
             print('\nStopping headless mode...')
+        except Exception as e:
+            print(f'ERROR in headless mode: {e}', flush=True)
+            import traceback
+            traceback.print_exc()
         
         # Save before exit
         print('Saving data...')

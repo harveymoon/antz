@@ -20,6 +20,12 @@ try:
 except ImportError:
     PISUGAR_AVAILABLE = False
 
+try:
+    from gpiozero import Button as GPIOButton
+    GPIOZERO_AVAILABLE = True
+except ImportError:
+    GPIOZERO_AVAILABLE = False
+
 # Brain size limits (global constants)
 MIN_BRAIN_SIZE = 24
 MAX_BRAIN_SIZE = 128
@@ -69,6 +75,9 @@ class Ant:
 
         self.neurons = [ 0 for i in range(6) ]
         self.fitness = 0
+        self.fitness_sources = {}  # per-source breakdown for post-hoc analysis
+        self.birthStep = colony.totalSteps
+        self.life_events = []  # list of [step, kind] entries: kind in {"pickup", "deliver"}
         self.direction = 0
         self.pDirection = 0
         self.x = 0
@@ -141,6 +150,24 @@ class Ant:
         self._cached_terrain_right = 0
         self._cached_terrain_back = 0
         self._sensors_computed = False  # Flag to track if sensors need recomputing
+
+    def add_fitness(self, amount, source):
+        """Add to fitness AND record the source for post-hoc reward decomposition.
+        Fitness is hard-floored at 0; if a negative amount would push it below,
+        only the portion actually applied is recorded in the source breakdown
+        (so the sum of sources always equals self.fitness)."""
+        new_fitness = self.fitness + amount
+        if new_fitness < 0:
+            # Only the portion that brought us to 0 is "real"
+            applied = -self.fitness
+            self.fitness = 0
+        else:
+            applied = amount
+            self.fitness = new_fitness
+        if source in self.fitness_sources:
+            self.fitness_sources[source] += applied
+        else:
+            self.fitness_sources[source] = applied
         
 
 
@@ -318,6 +345,11 @@ class Ant:
 
     def RunBrain(self):
         """RunBrain() : run the brain of the ant"""
+        # Reset the per-frame movement budget. Many synapses can call self.move()
+        # in a single RunBrain pass; this caps total per-frame movement so ants
+        # cannot accumulate enough velocity to skip over walls.
+        self._move_budget = 1.0
+
         # Cache locals for performance
         brain = self.brain
         neurons = self.neurons
@@ -573,75 +605,82 @@ class Ant:
             return 1 - dist / 5
         return 0
     
-    def move(self,amount):
-        """move() : move the ant in the direction it is facing """
-        # Store normalized amount for recurrence input
+    def move(self, amount):
+        """move() : move the ant in the direction it is facing.
+
+        Per-call amount is clamped to [-0.4, 0.4] cells. A separate per-frame
+        budget (set in RunBrain) caps cumulative movement to 1 cell/frame so
+        many synapses firing into the move output cannot teleport the ant.
+        Movement is walked in substeps so a diagonal step can't slip between
+        perpendicular walls."""
         self.lastMoveAmount = max(-1.0, min(1.0, amount))
-        
-        #limit amount to 5
-        if amount > .8:
-            amount = .8
-        if amount < -.8:
-            amount = -.8
-        
-        
-        amount*=.5
-       
-       # ant has no access to the grid, so it cannot check for walls
-        # futurePox = [self.x + math.cos(self.direction) * amount, self.y + math.sin(self.direction) * amount]
-        # curWall = self.terrainGrid.GetVal(int(futurePox[0]), int(futurePox[1])
-        # if curWall != False:
-        #     amount = 0
-        #     self.life -= 1# penalize the ant for hitting a wall
-        #     #damage the wall at the front of the ant by .1
-        #     self.terrainGrid.SetVal(int(futurePox[0]), int(futurePox[1]), curWall - .1)
-        
-        if self.DebugBrain:
-            print(self.blockedFront)
-                  
-        if self.blockedFront!= False:
-            amount = 0
-            #self.life -= .1# penalize the ant for hitting a wall
-            
-            self.turn((random.random() - 0.5) * 0.8)  # ~±0.4 rad
-            return  # bail early to avoid adding the forward step
-    
-        if self.DebugBrain:
-            print(f'moving amount: {amount}')
-    
-        addX = math.cos(self.direction) * amount
-        addY = math.sin(self.direction) * amount
-        if self.DebugBrain:
-            print(f'addX: {addX}, addY: {addY}')
-        
-        newX = self.x + addX
-        newY = self.y + addY
-        
-        # Clamp position to grid boundaries - prevent ants from escaping
-        if newX < 0:
-            newX = 0
-        elif newX >= self.colony.width:
-            newX = self.colony.width - 0.01
-        if newY < 0:
-            newY = 0
-        elif newY >= self.colony.height:
-            newY = self.colony.height - 0.01
-        
-        # Check if destination cell is a wall - reject movement if so
-        destTerrain = self.colony.terrainGrid.GetVal(int(newX), int(newY))
-        if destTerrain == self.colony.WALL_DENSITY:
+
+        # Per-call clamp
+        if amount > 0.8:
+            amount = 0.8
+        elif amount < -0.8:
+            amount = -0.8
+        amount *= 0.5  # max ±0.4 cells per call
+
+        if self.blockedFront:
             self.turn((random.random() - 0.5) * 0.8)
             return
-        
-        self.x = newX
-        self.y = newY
-        
-        if self.DebugBrain:
-            print(f'new pos: {self.x}, {self.y}')
-        # self.energy -= 1
-        
-        # set farthest traveled if greater than current
-        self.FarthestTraveled = max(self.FarthestTraveled, math.hypot(self.x - self.colony.hivePos[0], self.y - self.colony.hivePos[1]))
+
+        # Per-frame cumulative cap: spend from the budget set by RunBrain.
+        budget = getattr(self, "_move_budget", 1.0)
+        if budget <= 0:
+            return
+        if abs(amount) > budget:
+            amount = budget if amount > 0 else -budget
+
+        addX = math.cos(self.direction) * amount
+        addY = math.sin(self.direction) * amount
+
+        # Walk in substeps so cell crossings (especially diagonals) check walls
+        SUBSTEPS = 2
+        sub_dx = addX / SUBSTEPS
+        sub_dy = addY / SUBSTEPS
+        wall = self.colony.WALL_DENSITY
+        terrain = self.colony.terrainGrid
+        cw = self.colony.width
+        ch = self.colony.height
+
+        cx, cy = self.x, self.y
+        moved = 0.0
+        for _ in range(SUBSTEPS):
+            nx = cx + sub_dx
+            ny = cy + sub_dy
+
+            # Grid clamp
+            if nx < 0:
+                nx = 0
+            elif nx >= cw:
+                nx = cw - 0.01
+            if ny < 0:
+                ny = 0
+            elif ny >= ch:
+                ny = ch - 0.01
+
+            # Only check terrain when crossing into a new cell
+            if int(nx) != int(cx) or int(ny) != int(cy):
+                if terrain.GetVal(int(nx), int(ny)) == wall:
+                    # Hit wall mid-step: stop here, turn, burn the rest of the budget
+                    self.turn((random.random() - 0.5) * 0.8)
+                    self._move_budget = 0
+                    break
+
+            cx, cy = nx, ny
+            moved += abs(amount) / SUBSTEPS
+
+        self.x = cx
+        self.y = cy
+        self._move_budget = max(0.0, budget - moved)
+
+        # Track farthest distance from hive for the death-time exploration bonus
+        self.FarthestTraveled = max(
+            self.FarthestTraveled,
+            math.hypot(self.x - self.colony.hivePos[0], self.y - self.colony.hivePos[1])
+        )
     
     def turn(self, direction):
         """turn() : turn the ant in a direction """
@@ -929,12 +968,32 @@ class AntColony:
         self.StartTime = time.time()
         
         # Mutation rate: fraction of synapses to change per mutation (0.0-1.0)
-        self.mutationRate = 0.5
+        self.mutationRate = 0.2
         
         # Unique run ID for this simulation instance (used in save filenames)
         import uuid
         self.runID = uuid.uuid4().hex[:8]  # 8-character unique ID
         print(f"Run ID: {self.runID}")
+
+        # In-memory ring buffer of recent death records for the L-key lifeline view.
+        # Capped to bound memory; older entries drop off.
+        self.deathLifeRecords = []
+        self.deathLifeMax = 5000
+
+        # Per-death log: one JSONL line per ant death for post-hoc analysis.
+        # Format per line: {step, antID, food_consumed, lifespan, fitness_final,
+        #                   fitness_breakdown, brain_size, brain_hash, ...}
+        try:
+            death_log_dir = os.path.join('dataSave', 'deaths')
+            os.makedirs(death_log_dir, exist_ok=True)
+            self.deathLogPath = os.path.join(death_log_dir, f'{self.runID}.jsonl')
+            self.deathLogFile = open(self.deathLogPath, 'a', encoding='utf-8')
+            self._deathsSinceFlush = 0
+            print(f"Death log: {self.deathLogPath}")
+        except Exception as e:
+            print(f"Failed to open death log: {e}")
+            self.deathLogFile = None
+            self._deathsSinceFlush = 0
         
         self.BestAnts = []
         self.LastBestAnts = []
@@ -954,6 +1013,7 @@ class AntColony:
         self.totalDeadAnts = 0
         self.topFoodFound = 0
         self.totalSteps = 0
+        self.initialWallCount = 0  # Set by _generate_walls; used to trigger reset on >50% wall erosion
         
         # Stagnation detection variables
         self.lastLeaderboardChangeStep = 0  # Step when leaderboard last changed
@@ -1303,6 +1363,18 @@ class AntColony:
                                     self.terrainGrid.SetVal(x, y, self.WALL_DENSITY)
         
         print(f"  • Walls generated: + pattern at ({center_x}, {center_y}) + {num_random_walls} random walls")
+        # Snapshot wall count so we can detect when too many have eroded.
+        self.initialWallCount = self._countWalls()
+        print(f"  • Initial wall count: {self.initialWallCount}")
+
+    def _countWalls(self):
+        """Return the number of impassable wall tiles currently on the map."""
+        wall = self.WALL_DENSITY
+        count = 0
+        for x, y in self.terrainGrid.active_cells:
+            if self.terrainGrid.grid[x][y] == wall:
+                count += 1
+        return count
 
     def create_world(self):
         """Create the world with ants and varied terrain densities"""
@@ -1344,9 +1416,11 @@ class AntColony:
             ant.prevCellY = -1
             ant.foodPickupPos = None
         
-        # Update reset tracking
+        # Update reset tracking. Reset stagnation timer too: a fresh world is a
+        # fresh starting point, so the no-improvement clock should not carry over.
         self.lastWorldReset = self.totalSteps
-        
+        self.lastLeaderboardChangeStep = self.totalSteps
+
         print(f"  • Terrain regenerated with {len(self.terrainGrid.listActive())} blocks")
         print("✅ World reset complete!")
                 
@@ -1822,18 +1896,20 @@ class AntColony:
                     ant.life += 150  # Reward: keep ant alive to forage again
                     
                     # === TRIP COMPLETION REWARD ===
-                    # Base reward for completing the round trip
-                    ant.fitness += 200
-                    
+                    # Base reward for completing the round trip. This is the winning
+                    # strategy and must clearly out-pay any per-step trail bonus.
+                    ant.life_events.append([self.totalSteps, "deliver"])
+                    ant.add_fitness(500, "deliver_base")
+
                     # Bonus based on how far the food was from hive (harder = more reward)
                     if ant.foodPickupPos is not None:
                         pickup_distance = math.hypot(
                             ant.foodPickupPos[0] - self.hivePos[0],
                             ant.foodPickupPos[1] - self.hivePos[1]
                         )
-                        # 3 points per tile of distance (rewards far foraging)
-                        distance_bonus = int(pickup_distance * 3)
-                        ant.fitness += distance_bonus
+                        # 5 points per tile of distance (rewards far foraging)
+                        distance_bonus = int(pickup_distance * 5)
+                        ant.add_fitness(distance_bonus, "deliver_distance")
                         ant.foodPickupPos = None  # Reset for next trip
             ant.pDirection = float(ant.direction)    
             ant.RunBrain()
@@ -1889,10 +1965,11 @@ class AntColony:
                             
                             ant.ClossestFood = [-1,-1]
                             ant.FoodConsumed += 1
-                            ant.life += 150  # Keep ant alive longer to return food
-                            ant.fitness += 50  # Meaningful reward for finding food
-                            if ant.life > 400:
-                                ant.life = 400
+                            ant.life += 250  # Keep ant alive longer to return food
+                            ant.life_events.append([self.totalSteps, "pickup"])
+                            ant.add_fitness(50, "pickup")
+                            if ant.life > 500:
+                                ant.life = 500
 
                             ant.carryingFood = True
                             # Record pickup position for navigation fitness
@@ -1961,10 +2038,12 @@ class AntColony:
                     if newAmmt < MAX_PHEROMONE:
                         self.nestPheromoneGrid.SetVal(x_pos, y_pos, newAmmt)
                     
-                    # Fitness bonus for following food pheromone trails while foraging
+                    # Fitness bonus for following food pheromone trails while foraging.
+                    # Scales with trail strength but kept small so trail-walking
+                    # cannot out-pay actually picking up food and delivering it home.
                     foodPher = self.foodPheromoneGrid.GetVal(x_pos, y_pos)
                     if foodPher and foodPher > 0:
-                        ant.fitness += 1
+                        ant.add_fitness(foodPher * 0.3, "trail_step")
                 
                 # Update previous cell position
                 ant.prevCellX = x_pos
@@ -2023,20 +2102,83 @@ class AntColony:
             # If ant died while carrying food, give partial credit for progress
             if ant.carryingFood and ant.foodPickupPos is not None:
                 nav_fitness = ant.calculateNavigationFitness()
-                ant.fitness += nav_fitness  # Can be positive or negative (capped)
+                ant.add_fitness(nav_fitness, "death_nav")  # Can be positive or negative (capped)
             
             foodConsumed = ant.FoodConsumed  # This is actually "completed trips"
             antFitness = ant.fitness
-            
+
             # Exploration bonus: reward ants that ventured far (but cap it)
             # Only if they completed at least one trip
+            exploration_bonus = 0
             if foodConsumed > 0:
                 exploration_bonus = min(50, int(ant.FarthestTraveled * 0.5))
                 antFitness += exploration_bonus
+                # Record on the ant's breakdown too so the death log captures it.
+                ant.fitness_sources["death_exploration"] = (
+                    ant.fitness_sources.get("death_exploration", 0) + exploration_bonus
+                )
+
+            # Brain color & event list captured once for both the on-disk log
+            # and the in-memory lifeline view.
+            try:
+                _color = BrainToColor(ant.brain)
+                ant_color = [int(_color[0]), int(_color[1]), int(_color[2])]
+            except Exception:
+                ant_color = [200, 200, 200]
+            birth_step = getattr(ant, "birthStep", 0)
+            life_events = list(getattr(ant, "life_events", []))
+            lifespan = self.totalSteps - birth_step
+
+            # In-memory record consumed by drawLifeLines (L key)
+            self.deathLifeRecords.append({
+                "antID": list(ant.antID),
+                "color": ant_color,
+                "birth_step": birth_step,
+                "death_step": self.totalSteps,
+                "lifespan": lifespan,
+                "events": life_events,
+                "fitness_final": antFitness,
+                "food_consumed": foodConsumed,
+            })
+            if len(self.deathLifeRecords) > self.deathLifeMax:
+                # Drop oldest in chunks to amortize cost
+                drop = len(self.deathLifeRecords) - self.deathLifeMax
+                del self.deathLifeRecords[:drop]
+
+            # Per-death log line for post-hoc analysis
+            if self.deathLogFile is not None:
+                try:
+                    death_entry = {
+                        "step": self.totalSteps,
+                        "antID": list(ant.antID),
+                        "food_consumed": foodConsumed,
+                        "lifespan": lifespan,
+                        "fitness_final": antFitness,
+                        "fitness_breakdown": dict(ant.fitness_sources),
+                        "brain_size": len(ant.brain),
+                        "brain_hash": hash(tuple(tuple(g) for g in ant.brain)) & 0xFFFFFFFF,
+                        "farthest": int(ant.FarthestTraveled),
+                        "carrying_at_death": bool(ant.carryingFood),
+                        "color": ant_color,
+                        "birth_step": birth_step,
+                        "events": life_events,
+                    }
+                    self.deathLogFile.write(json.dumps(death_entry) + '\n')
+                    self._deathsSinceFlush += 1
+                    if self._deathsSinceFlush >= 500:
+                        self.deathLogFile.flush()
+                        self._deathsSinceFlush = 0
+                except Exception:
+                    pass
             
             antBrain = ant.brain
             self.totalDeadAnts += 1
-            if foodConsumed >= 1 and antFitness > 10:
+            # Any ant that gathered at least one food is a candidate for the
+            # leaderboard. If the leaderboard is full and this ant's fitness is
+            # below the cutoff, the periodic sort+trim in Repopulate will drop
+            # it. With an empty/sparse leaderboard, low-fitness food finders
+            # seed the next generation rather than being thrown away.
+            if foodConsumed >= 1:
                 # Check if this brain already exists in BestAnts
                 brain_key = tuple(tuple(gene) for gene in antBrain)
                 existing_idx = None
@@ -2120,7 +2262,15 @@ class AntColony:
             steps_since_reset = self.totalSteps - self.lastWorldReset
             if steps_since_reset >= self.worldResetInterval:
                 self.reset_world()
-        
+
+        # Reset the world if more than half of the initial walls have eroded away.
+        # Checked every 500 steps so the scan cost is negligible.
+        if self.totalSteps % 500 == 0 and self.initialWallCount > 0:
+            current_walls = self._countWalls()
+            if current_walls < self.initialWallCount * 0.5:
+                print(f"[WALL EROSION] Walls dropped to {current_walls}/{self.initialWallCount} (<50%) - resetting world")
+                self.reset_world()
+
         if self.totalSteps % 1000 == 0:
             print("------------------report-----------------")
             print(f'Steps So Far: {self.totalSteps}')
@@ -2266,20 +2416,39 @@ class AntColony:
         #     fade.set_alpha(5)
         fade.set_alpha(5)
         screen.blit(fade, (0, 0))
+
+        # Carriers drawn at full brain color. Foragers drawn at the same color
+        # pre-blended toward the dark background so they look ~10% opacity
+        # without using SRCALPHA accumulation, which was saturating the trail
+        # and breaking the natural fade-out.
+        BG = 25  # matches the fade-target gray
+        DIM = 0.10  # forager opacity factor
+
+        def _dim(c):
+            return (
+                int(BG + (c[0] - BG) * DIM),
+                int(BG + (c[1] - BG) * DIM),
+                int(BG + (c[2] - BG) * DIM),
+            )
+
         if isPi:
             for ant in self.ants:
                 if ant.life <= 1 and len(ant.posHistory) > 1:
-                    # Draw path when ant is about to die (Pi mode optimization)
                     points = [self.WorldToScreen(pos) for pos in ant.posHistory]
-                    pygame.draw.lines(screen, ant.Color, False, points, 1)
+                    color = ant.Color if ant.carryingFood else _dim(ant.Color)
+                    pygame.draw.lines(screen, color, False, points, 1)
         else:
             for ant in self.ants:
                 if len(ant.posHistory) > 1:
-                    # Draw all ant paths (regardless of food consumed)
-                    # Use pygame.draw.lines for better performance (single draw call per ant)
                     points = [self.WorldToScreen(pos) for pos in ant.posHistory]
-                    pygame.draw.lines(screen, ant.Color, False, points, 1)
+                    color = ant.Color if ant.carryingFood else _dim(ant.Color)
+                    pygame.draw.lines(screen, color, False, points, 1)
         
+        # Draw active food as single dark-green pixels (one per cell, ignoring stack count)
+        for fx, fy in self.foodGrid.active_cells:
+            sx, sy = self.WorldToScreen([fx, fy])
+            pygame.draw.rect(screen, (0, 100, 0), (int(sx), int(sy), 1, 1))
+
         # Draw white '+' markers where food was eaten (draw once, then clear so they fade)
         for pos in self.foodEatenPositions:
             screen_pos = self.WorldToScreen(pos)
@@ -2927,71 +3096,84 @@ class AntColony:
                 "step": self.totalSteps
             })
         
-        # Add snapshot to history (no limit - keep all history)
+        # Add snapshot to history. Cap to bound memory in long-running sessions
+        # (timeline already downsamples for display, so older snapshots add no signal).
         self.fitnessHistory.append({
             "step": self.totalSteps,
             "ants": selectedAnts
         })
+        MAX_HISTORY = 5000
+        if len(self.fitnessHistory) > MAX_HISTORY:
+            self.fitnessHistory = self.fitnessHistory[-MAX_HISTORY:]
 
     def drawTimelineOverlay(self, screen, isPi=False):
         """Draw fitness timeline overlay at bottom of screen"""
         if len(self.fitnessHistory) < 2:
             return
-        
+
+        # Downsample history to at most 200 points for rendering.
+        # Full history is preserved in self.fitnessHistory - only the view is sampled.
+        MAX_DISPLAY = 200
+        if len(self.fitnessHistory) > MAX_DISPLAY:
+            step = len(self.fitnessHistory) // MAX_DISPLAY
+            history = self.fitnessHistory[::step]
+        else:
+            history = self.fitnessHistory
+
         screen_height = screen.get_height()
         screen_width = screen.get_width()
-        
+
         # Timeline dimensions
         timeline_height = 120
         timeline_width = screen_width - 20
         timeline_x = 10
         timeline_y = screen_height - timeline_height - 10
-        
+
         # Draw semi-transparent dark background
         overlay = pygame.Surface((timeline_width, timeline_height), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 153))  # Black with 60% opacity
         screen.blit(overlay, (timeline_x, timeline_y))
-        
+
         # Find min/max fitness for normalization
         all_fitness_values = []
-        for snapshot in self.fitnessHistory:
+        for snapshot in history:
             for ant in snapshot["ants"]:
                 all_fitness_values.append(ant["fitness"])
-        
+
         if len(all_fitness_values) == 0:
             return
-        
+
         min_fitness = min(all_fitness_values)
         max_fitness = max(all_fitness_values)
         fitness_range = max_fitness - min_fitness
-        
+
         if fitness_range == 0:
             fitness_range = 1  # Prevent division by zero
-        
+
         # Draw timeline graph
         graph_height = timeline_height - 20
         graph_width = timeline_width - 20
         graph_x = timeline_x + 10
         graph_y = timeline_y + 10
-        
+
         # Calculate time range
-        if len(self.fitnessHistory) > 1:
-            time_range = self.fitnessHistory[-1]["step"] - self.fitnessHistory[0]["step"]
+        if len(history) > 1:
+            time_range = history[-1]["step"] - history[0]["step"]
             if time_range == 0:
                 time_range = 1
         else:
             time_range = 1
-        
+
         # Draw fitness lines for each ant position
-        for snapshot_idx, snapshot in enumerate(self.fitnessHistory):
+        for snapshot_idx, snapshot in enumerate(history):
             if snapshot_idx == 0:
                 continue  # Skip first snapshot (need previous point for line)
-            
-            prev_snapshot = self.fitnessHistory[snapshot_idx - 1]
-            
+
+            prev_snapshot = history[snapshot_idx - 1]
+
             # Calculate x positions for current and previous snapshots
-            curr_time_progress = (snapshot["step"] - self.fitnessHistory[0]["step"]) / time_range
-            prev_time_progress = (prev_snapshot["step"] - self.fitnessHistory[0]["step"]) / time_range
+            curr_time_progress = (snapshot["step"] - history[0]["step"]) / time_range
+            prev_time_progress = (prev_snapshot["step"] - history[0]["step"]) / time_range
             
             curr_x = graph_x + int(curr_time_progress * graph_width)
             prev_x = graph_x + int(prev_time_progress * graph_width)
@@ -3016,6 +3198,248 @@ class AntColony:
                 if abs(curr_x - prev_x) > 0 or abs(curr_y - prev_y) > 0:
                     pygame.draw.line(screen, color, (prev_x, prev_y), (curr_x, curr_y), 2)
 
+    def drawPiBrainPanels(self, screen):
+        """Pi-only 3-panel view for brain-debug mode.
+        Top 1/3: top-ants list. Middle 1/3: fitness timeline. Bottom 1/3: simplified brain.
+        Drawn directly on the high-res screen, bypassing the down-scaled renderSurface."""
+        sw = screen.get_width()
+        sh = screen.get_height()
+        panel_h = sh // 3
+
+        screen.fill((0, 0, 0))
+
+        self._drawPiTopAntsPanel(screen, 0, 0, sw, panel_h)
+        self._drawPiTimelinePanel(screen, 0, panel_h, sw, panel_h)
+        self._drawPiBrainPanel(screen, 0, 2 * panel_h, sw, sh - 2 * panel_h)
+
+    def _drawPiTopAntsPanel(self, screen, x, y, w, h):
+        if not self.BestAnts:
+            return
+        font = self._get_font(20)
+        row_h = 26
+        pad = 6
+        max_rows = max(1, (h - 2 * pad) // row_h)
+        ants_sorted = sorted(self.BestAnts, key=lambda a: a.get("fitness", 0), reverse=True)
+        for i, ant in enumerate(ants_sorted[:max_rows]):
+            row_y = y + pad + i * row_h
+            col = BrainToColor(ant["brain"])
+            col = (int(col[0]), int(col[1]), int(col[2]))
+            pygame.draw.rect(screen, col, (x + 6, row_y + 4, 14, 14))
+            text = font.render(f'{int(ant.get("fitness", 0)):>7}  ID:{ant["antID"][0]}', True, (255, 255, 255))
+            screen.blit(text, (x + 28, row_y))
+
+    def _drawPiTimelinePanel(self, screen, x, y, w, h):
+        history = self.fitnessHistory
+        if len(history) < 2:
+            return
+        MAX_DISPLAY = 200
+        if len(history) > MAX_DISPLAY:
+            step = len(history) // MAX_DISPLAY
+            history = history[::step]
+
+        pad = 8
+        gx = x + pad
+        gy = y + pad
+        gw = w - 2 * pad
+        gh = h - 2 * pad
+
+        all_fit = []
+        for snap in history:
+            for a in snap["ants"]:
+                all_fit.append(a["fitness"])
+        if not all_fit:
+            return
+        fmin = min(all_fit)
+        fmax = max(all_fit)
+        frng = max(1, fmax - fmin)
+        trng = max(1, history[-1]["step"] - history[0]["step"])
+        t0 = history[0]["step"]
+
+        for i in range(1, len(history)):
+            prev = history[i - 1]
+            curr = history[i]
+            cx = gx + int((curr["step"] - t0) / trng * gw)
+            px = gx + int((prev["step"] - t0) / trng * gw)
+            n = min(len(prev["ants"]), len(curr["ants"]))
+            for k in range(n):
+                cy = gy + gh - int((curr["ants"][k]["fitness"] - fmin) / frng * gh)
+                py = gy + gh - int((prev["ants"][k]["fitness"] - fmin) / frng * gh)
+                pygame.draw.line(screen, curr["ants"][k]["color"], (px, py), (cx, cy), 2)
+
+    def _drawPiBrainPanel(self, screen, x, y, w, h):
+        debug_ant = None
+        for ant in self.ants:
+            if ant.DebugBrain:
+                debug_ant = ant
+                break
+        if debug_ant is None:
+            return
+
+        n_in = len(debug_ant.InputSources)
+        n_neu = len(debug_ant.neurons)
+        n_out = len(debug_ant.OutputDestinations)
+
+        pad = 16
+        col_in_x = x + pad + 8
+        col_neu_x = x + w // 2
+        col_out_x = x + w - pad - 8
+
+        in_y0 = y + pad
+        in_h = h - 2 * pad
+        in_step = in_h / max(1, n_in)
+
+        neu_block_h = max(1, n_neu) * 36
+        neu_y0 = y + (h - neu_block_h) // 2
+        neu_step = 36
+
+        out_block_h = max(1, n_out) * 60
+        out_y0 = y + (h - out_block_h) // 2
+        out_step = 60
+
+        def value_to_color(val):
+            val = max(-1, min(1, val))
+            normalized = (val + 1) / 2
+            if normalized < 0.5:
+                r = 255
+                g = int(255 * (normalized * 2))
+            else:
+                r = int(255 * (1 - (normalized - 0.5) * 2))
+                g = 255
+            return (r, g, 0)
+
+        def in_pos(idx):
+            return (col_in_x, int(in_y0 + idx * in_step + in_step / 2))
+
+        def neu_pos(idx):
+            return (col_neu_x, int(neu_y0 + idx * neu_step + neu_step / 2))
+
+        def out_pos(idx):
+            return (col_out_x, int(out_y0 + idx * out_step + out_step / 2))
+
+        # Synapses first (lines under dots)
+        for BR in debug_ant.brain:
+            src, srcSel, dstSel, frc, dest = BR[0], BR[1], BR[2], BR[3], BR[4]
+            if src:
+                sIdx = srcSel % n_in
+                sx, sy = in_pos(sIdx)
+                finalForce = frc
+            else:
+                sIdx = srcSel % n_neu
+                sx, sy = neu_pos(sIdx)
+                finalForce = frc * debug_ant.neurons[sIdx]
+            if dest:
+                dIdx = dstSel % n_out
+                dx, dy = out_pos(dIdx)
+            else:
+                dIdx = dstSel % n_neu
+                dx, dy = neu_pos(dIdx)
+            color = (0, 255, 0) if finalForce >= 0 else (255, 0, 0)
+            thickness = max(1, min(3, int(abs(finalForce) * 3)))
+            pygame.draw.line(screen, color, (sx, sy), (dx, dy), thickness)
+
+        # Input dots (small)
+        for i in range(n_in):
+            val = debug_ant.InputSources[i]()
+            pygame.draw.circle(screen, value_to_color(val), in_pos(i), 5)
+
+        # Neuron dots (medium)
+        for i in range(n_neu):
+            pygame.draw.circle(screen, value_to_color(debug_ant.neurons[i]), neu_pos(i), 9)
+
+        # Output dots (yellow)
+        for i in range(n_out):
+            pygame.draw.circle(screen, (255, 255, 0), out_pos(i), 9)
+
+    def drawLifeLines(self, screen, scroll_y, auto_stick):
+        """Render the lifeline list. One row per dead ant, newest at the bottom.
+        Each row: a brain-colored line scaled to lifespan, with X markers for pickups
+        and O markers for deliveries, capped by | at death.
+
+        Returns (clamped_scroll_y, total_height) so the caller can update its state.
+        """
+        ROW_H = 20
+        LABEL_W = 220
+        sw = screen.get_width()
+        sh = screen.get_height()
+
+        # Full-screen dim background to hide the simulation underneath
+        bg = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        bg.fill((10, 10, 15, 240))
+        screen.blit(bg, (0, 0))
+
+        rows = self.deathLifeRecords
+        total_h = len(rows) * ROW_H
+
+        if auto_stick:
+            scroll_y = max(0, total_h - sh)
+        scroll_y = max(0, min(scroll_y, max(0, total_h - sh)))
+
+        # Header
+        font = self._get_font('mono')
+        header_str = (f'  Lifelines  total:{len(rows)}  '
+                      f'{"[FOLLOW]" if auto_stick else "[SCROLL]"}  '
+                      f'L:close  F:toggle-follow  HOME/END:jump  wheel:scroll')
+        pygame.draw.rect(screen, (30, 30, 35), (0, 0, sw, 18))
+        screen.blit(font.render(header_str, True, (200, 200, 200)), (5, 1))
+
+        if not rows:
+            screen.blit(font.render('No ant deaths yet. Wait for ants to die...',
+                                    True, (200, 200, 200)), (20, 30))
+            return scroll_y, total_h
+
+        # Visible row range
+        first_idx = max(0, scroll_y // ROW_H)
+        last_idx = min(len(rows), (scroll_y + sh) // ROW_H + 1)
+        if last_idx <= first_idx:
+            return scroll_y, total_h
+
+        # Scale lifespans to the longest currently visible
+        visible = rows[first_idx:last_idx]
+        max_life = max((r["lifespan"] for r in visible), default=1) or 1
+
+        line_x0 = 10
+        line_x1 = max(line_x0 + 50, sw - LABEL_W)
+        line_w_px = line_x1 - line_x0
+
+        for i in range(first_idx, last_idx):
+            r = rows[i]
+            y_base = i * ROW_H - scroll_y + ROW_H // 2 + 18  # +18 for header
+            life = max(1, r["lifespan"])
+            color = tuple(r.get("color", (200, 200, 200)))
+            life_pixels = max(1, int(line_w_px * (life / max_life)))
+            x_end = line_x0 + life_pixels
+
+            # Main line in brain color
+            pygame.draw.line(screen, color, (line_x0, y_base), (x_end, y_base), 1)
+
+            # Event markers
+            birth = r["birth_step"]
+            for ev in r.get("events", []):
+                if not isinstance(ev, (list, tuple)) or len(ev) < 2:
+                    continue
+                ev_step, ev_kind = ev[0], ev[1]
+                t = (ev_step - birth) / life if life > 0 else 0
+                t = max(0.0, min(1.0, t))
+                ex = line_x0 + int(t * life_pixels)
+                if ev_kind == "pickup":
+                    pygame.draw.line(screen, (255, 200, 0),
+                                     (ex - 3, y_base - 3), (ex + 3, y_base + 3), 1)
+                    pygame.draw.line(screen, (255, 200, 0),
+                                     (ex - 3, y_base + 3), (ex + 3, y_base - 3), 1)
+                elif ev_kind == "deliver":
+                    pygame.draw.circle(screen, (0, 255, 100), (ex, y_base), 4, 1)
+
+            # Death cap |
+            pygame.draw.line(screen, color, (x_end, y_base - 5), (x_end, y_base + 5), 1)
+
+            # Right-side label
+            lbl = (f'#{r["antID"][0]:>5}  f={int(r["fitness_final"]):>5}  '
+                   f'food={r["food_consumed"]:>2}  life={life}')
+            screen.blit(font.render(lbl, True, (180, 180, 180)),
+                        (line_x1 + 5, y_base - 7))
+
+        return scroll_y, total_h
+
     def cullLeaderboard(self):
         """Remove the bottom 50% of the leaderboard to make room for new ants"""
         if len(self.BestAnts) < 2:
@@ -3038,8 +3462,26 @@ class AntColony:
         
         print(f"[LEADERBOARD CULLED] Removed {original_count - keep_count} ants, kept top {keep_count}")
 
+    def closeDeathLog(self):
+        """Flush and close the per-death JSONL log."""
+        if self.deathLogFile is not None:
+            try:
+                self.deathLogFile.flush()
+                self.deathLogFile.close()
+            except Exception:
+                pass
+            self.deathLogFile = None
+
     def saveData(self):
-        
+
+        # Flush death log so the most recent deaths are durable on disk.
+        if self.deathLogFile is not None:
+            try:
+                self.deathLogFile.flush()
+                self._deathsSinceFlush = 0
+            except Exception:
+                pass
+
         # Update fitness history snapshot when saving
         self.updateFitnessHistory()
         
@@ -3303,6 +3745,18 @@ class Game:
         self.debugMode = False
         self.testMode = False
         self.headlessMode = False
+
+        # Physical mode-cycle button (Pi only)
+        self.viewModeIdx = 0          # 0 = normal, 1 = paths, 2 = brain debug
+        self.modeButtonFlag = False   # set by GPIO callback, consumed by main loop
+        self.modeButton = None        # gpiozero.Button instance, Pi only
+
+        # Lifeline view (L key)
+        self.showLifeLines = False
+        self.lifeLineScroll = 0
+        self.lifeLineAutoStick = False  # off by default; F key toggles follow-bottom
+        self.modeButtonCooldown = 2.0 # seconds; ignore presses within this window of the last cycle (reed-switch chatter)
+        self.lastModeChangeTime = 0.0
         
         self.maxAnts = 500
         self.targetFps = 6  # Target FPS for adaptive ant count
@@ -3323,7 +3777,21 @@ class Game:
         parser.add_argument('--load', action='store_true', help='Load best ants from saved data files')
         parser.add_argument('--test', action='store_true', help='Test mode: 1 ant, 1 second delay, brain debug enabled')
         parser.add_argument('--headless', action='store_true', help='Headless mode: no rendering, runs as fast as possible')
+        parser.add_argument('--fullscreen', action='store_true', help='Run fullscreen on the chosen monitor (auto-detect resolution)')
+        parser.add_argument('--monitor', type=int, default=0, help='Monitor index for --fullscreen (0=primary, 1=second, ...)')
         args = parser.parse_args()
+        self.fullscreenMode = False
+        self.fullscreenMonitor = 0
+        if args.fullscreen and not args.pi and not args.headless:
+            self.fullscreenMode = True
+            self.fullscreenMonitor = max(0, args.monitor)
+            self.pixelScale = max(1, args.scale)
+            # Must be set BEFORE pygame.init() / display.init().
+            # Without this, SDL forces the exclusive-fullscreen window to minimize
+            # whenever another app gains focus on Windows.
+            os.environ['SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS'] = '0'
+            os.environ['SDL_VIDEO_ALLOW_SCREENSAVER'] = '1'
+            print(f'Fullscreen mode requested on monitor {self.fullscreenMonitor} (scale {self.pixelScale}x)')
         if args.pi:
             self.isPi = True
             print('Running on Raspberry Pi')
@@ -3388,7 +3856,42 @@ class Game:
                 if tileSize < 5:
                     tileSize = 5  # Minimum tile size
                 print(f'Tile size adjusted to: {tileSize}')
-            
+
+                if GPIOZERO_AVAILABLE:
+                    try:
+                        self.modeButton = GPIOButton(17, pull_up=True, bounce_time=0.05)
+                        self.modeButton.when_pressed = self._onModeButtonPressed
+                        print("Mode-cycle button bound to GPIO 17")
+                    except Exception as e:
+                        print(f"GPIO button init failed: {e}")
+                        self.modeButton = None
+
+            elif self.fullscreenMode:
+                pygame.display.init()
+                try:
+                    desktop_sizes = pygame.display.get_desktop_sizes()
+                except Exception as e:
+                    print(f'get_desktop_sizes failed ({e}), falling back to current display mode')
+                    desktop_sizes = []
+                if not desktop_sizes:
+                    info = pygame.display.Info()
+                    desktop_sizes = [(info.current_w, info.current_h)]
+                print(f'Detected {len(desktop_sizes)} monitor(s): {desktop_sizes}')
+                idx = self.fullscreenMonitor if self.fullscreenMonitor < len(desktop_sizes) else 0
+                self.screenSize = desktop_sizes[idx]
+                print(f'Using monitor {idx} at {self.screenSize}')
+                try:
+                    self.screen = pygame.display.set_mode(self.screenSize, pygame.FULLSCREEN, display=idx)
+                except TypeError:
+                    self.screen = pygame.display.set_mode(self.screenSize, pygame.FULLSCREEN)
+                self.renderSize = (self.screenSize[0] // self.pixelScale, self.screenSize[1] // self.pixelScale)
+                if self.pixelScale > 1:
+                    self.renderSurface = pygame.Surface(self.renderSize)
+                else:
+                    self.renderSurface = self.screen
+                pygame.mouse.set_visible(False)
+                print(f'Render size: {self.renderSize} -> scaled to {self.screenSize}')
+
             else:
                 # os.environ["SDL_VIDEO_WINDOW_POS"] = "-1100,0"
                 self.screen = pygame.display.set_mode(self.screenSize)
@@ -3450,7 +3953,40 @@ class Game:
                     else:
                         maxFoodFound = 0
         print("Game Ready")
-    
+
+    def _onModeButtonPressed(self):
+        # Runs in gpiozero's thread - only set a flag, never mutate sim state here.
+        self.modeButtonFlag = True
+
+    def _releaseGpio(self):
+        if self.modeButton is not None:
+            try:
+                self.modeButton.close()
+            except Exception:
+                pass
+            self.modeButton = None
+
+    def _cycleViewMode(self):
+        self.viewModeIdx = (self.viewModeIdx + 1) % 3
+        target_paths = (self.viewModeIdx == 1)
+        target_debug = (self.viewModeIdx == 2)
+
+        # If we're trying to enter debug but the colony is empty, skip the debug step
+        # so the user doesn't end up staring at a blank brain panel.
+        if target_debug and len(self.antColony.ants) == 0:
+            print("View mode: skipping debug (no ants yet)")
+            self.viewModeIdx = 0
+            target_paths = False
+            target_debug = False
+
+        self.drawPaths = target_paths
+        self.antColony.pathMode = target_paths
+
+        if self.antColony.brainDebugEnabled != target_debug:
+            self.antColony.toggleBrainDebug()
+
+        print(f"View mode -> {['normal', 'paths', 'debug'][self.viewModeIdx]}")
+
     def run(self):
         
         running = True
@@ -3469,6 +4005,11 @@ class Game:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                if event.type == pygame.MOUSEWHEEL and self.showLifeLines:
+                    # Any scroll input takes the view out of follow-bottom mode so the
+                    # user can read at their own pace. F re-enables follow.
+                    self.lifeLineScroll -= event.y * 60
+                    self.lifeLineAutoStick = False
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     # Right-click to add food at mouse position
                     if event.button == 3:  # Right mouse button
@@ -3495,6 +4036,28 @@ class Game:
                     # P key - toggle brain debug mode
                     if event.key == pygame.K_p:
                         self.antColony.toggleBrainDebug()
+                    # L key - toggle lifeline view (per-ant timeline of pickup/deliver/death)
+                    if event.key == pygame.K_l:
+                        self.showLifeLines = not self.showLifeLines
+                        # Open in scroll-mode anchored at the bottom so the user can see
+                        # the most recent deaths but they don't flicker by.
+                        if self.showLifeLines:
+                            self.lifeLineAutoStick = False
+                        print(f'Lifelines view: {"ON" if self.showLifeLines else "OFF"}', flush=True)
+                    # F: toggle follow-bottom mode
+                    # HOME: jump to top (oldest)
+                    # END: jump to bottom (latest) WITHOUT enabling follow
+                    if self.showLifeLines:
+                        if event.key == pygame.K_f:
+                            self.lifeLineAutoStick = not self.lifeLineAutoStick
+                            print(f'Lifelines follow-bottom: {"ON" if self.lifeLineAutoStick else "OFF"}', flush=True)
+                        elif event.key == pygame.K_HOME:
+                            self.lifeLineScroll = 0
+                            self.lifeLineAutoStick = False
+                        elif event.key == pygame.K_END:
+                            # Snap to bottom once, but don't keep following
+                            self.lifeLineAutoStick = False
+                            self.lifeLineScroll = 10**9  # clamped in drawLifeLines
                     # +/= key - increase target FPS
                     if event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS or event.key == pygame.K_KP_PLUS:
                         self.targetFps = min(60, self.targetFps + 1)
@@ -3509,8 +4072,11 @@ class Game:
 
             #run 5 times between each draw
             #not in pi mode
-            if self.testMode or self.antColony.brainDebugEnabled:
-                # Test mode or brain debug: single update per frame (don't skip updates)
+            if self.testMode or (self.antColony.brainDebugEnabled and not self.isPi):
+                # Test mode or desktop brain debug: single update per frame (don't skip updates)
+                self.antColony.update()
+            elif self.drawPaths and not self.isPi:
+                # Trail mode: single update per frame so path lines are smooth (no jumps)
                 self.antColony.update()
             elif not self.isPi:
                 for i in range(5):
@@ -3521,23 +4087,29 @@ class Game:
             fps = self.clock.get_fps()
            
 
-            if self.drawPaths:
-            # self.antColony.drawAnts(self.screen, isPi=self.isPi)
-                self.antColony.drawPaths(self.renderSurface, isPi= self.isPi)
+            pi_brain_view = self.isPi and self.antColony.brainDebugEnabled
+
+            if pi_brain_view:
+                # Pi brain-debug: 3-panel view drawn directly on the high-res screen.
+                # Skip the down-scaled renderSurface entirely so the brain is sharp.
+                self.antColony.drawPiBrainPanels(self.screen)
             else:
-                self.antColony.drawAnts(self.renderSurface, isPi=self.isPi)
-            
-            # Scale up the render surface to the screen if using pixel scaling
-            if self.isPi and self.pixelScale > 1:
-                # Use NEAREST neighbor scaling to maintain sharp pixels (no blurring)
-                scaled_surface = pygame.transform.scale(self.renderSurface, self.screenSize)
-                self.screen.blit(scaled_surface, (0, 0))
-            elif self.renderSurface is not self.screen:
-                # Non-Pi mode with separate render surface (shouldn't happen normally)
-                self.screen.blit(self.renderSurface, (0, 0))
-            
+                if self.drawPaths:
+                    self.antColony.drawPaths(self.renderSurface, isPi=self.isPi)
+                else:
+                    self.antColony.drawAnts(self.renderSurface, isPi=self.isPi)
+
+                # Scale up the render surface to the screen if using pixel scaling
+                if (self.isPi or self.fullscreenMode) and self.pixelScale > 1:
+                    # Use NEAREST neighbor scaling to maintain sharp pixels (no blurring)
+                    scaled_surface = pygame.transform.scale(self.renderSurface, self.screenSize)
+                    self.screen.blit(scaled_surface, (0, 0))
+                elif self.renderSurface is not self.screen:
+                    # Non-Pi mode with separate render surface (shouldn't happen normally)
+                    self.screen.blit(self.renderSurface, (0, 0))
+
             # Draw HUD stats in top-left corner (not affected by scaling)
-            if not self.drawPaths:
+            if not self.drawPaths and not pi_brain_view:
                 font = self.antColony._get_font(26)
                 hud_x = 10
                 hud_y = 10
@@ -3554,11 +4126,17 @@ class Game:
             
             # Draw top-ants overlay and timeline on top of HUD
             self.antColony.drawOverlays(self.screen, isPi=self.isPi)
-            
+
+            # Lifeline overlay (L key) - drawn last so it covers everything else
+            if self.showLifeLines:
+                self.lifeLineScroll, _ = self.antColony.drawLifeLines(
+                    self.screen, self.lifeLineScroll, self.lifeLineAutoStick
+                )
+
             # Draw battery indicator directly on screen (not affected by scaling)
             # Minimal 20px bar on bottom edge, no text
             if self.isPi and PISUGAR_AVAILABLE:
-                battery_bar_height = 20
+                battery_bar_height = 7
                 battery_bar_y = self.screenSize[1] - battery_bar_height
                 battery_bar_width = self.screenSize[0]
                 battery_level = self.antColony.batteryLevel
@@ -3579,6 +4157,14 @@ class Game:
             # KEY PRESSES
             keys = pygame.key.get_pressed()
 
+            # Physical mode-cycle button (Pi only) - consume flag set by gpiozero callback.
+            # Drop presses within the cooldown window so reed-switch chatter doesn't double-cycle.
+            if self.modeButtonFlag:
+                self.modeButtonFlag = False
+                if time.time() - self.lastModeChangeTime >= self.modeButtonCooldown:
+                    self._cycleViewMode()
+                    self.lastModeChangeTime = time.time()
+
             # Quit application with Q key or ESC key
             if keys[pygame.K_q] or keys[pygame.K_ESCAPE]:
                 print("Quitting application...")
@@ -3588,6 +4174,7 @@ class Game:
             if keys[pygame.K_x] and self.isPi:
                 print("Shutting down Raspberry Pi...")
                 self.antColony.saveData()  # Save data before shutdown
+                self._releaseGpio()
                 pygame.quit()
                 os.system("sudo shutdown -h now")
                 return
@@ -3614,9 +4201,9 @@ class Game:
             
             # Adjust mutation rate with [ and ] keys
             if keys[pygame.K_LEFTBRACKET]:
-                self.antColony.mutationRate = max(0.01, round(self.antColony.mutationRate - 0.01, 2))
+                self.antColony.mutationRate = max(0.01, round(self.antColony.mutationRate - 0.05, 2))
             if keys[pygame.K_RIGHTBRACKET]:
-                self.antColony.mutationRate = min(1.0, round(self.antColony.mutationRate + 0.01, 2))
+                self.antColony.mutationRate = min(1.0, round(self.antColony.mutationRate + 0.05, 2))
 
             #add key will add 1000 ants
             if keys[pygame.K_a]:
@@ -3655,11 +4242,13 @@ class Game:
 
             pygame.display.flip()
             # self.clock.tick(120)
-            if self.testMode or self.antColony.brainDebugEnabled:
+            if self.testMode or (self.antColony.brainDebugEnabled and not self.isPi):
                 self.clock.tick(1)  # 1 FPS = 1 second delay per frame for debugging
             else:
                 self.clock.tick()
 
+        self._releaseGpio()
+        self.antColony.closeDeathLog()
         pygame.quit()
 
     def run_headless(self):
@@ -3712,6 +4301,7 @@ class Game:
         # Save before exit
         print('Saving data...')
         self.antColony.saveData()
+        self.antColony.closeDeathLog()
         print('Done.')
 
 if __name__ == "__main__":

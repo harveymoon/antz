@@ -4,3 +4,6 @@
 .DS_Store
 /dataSave_old
 /reports
+__pycache__/
+.claude/
+top*.txt

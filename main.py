@@ -2198,53 +2198,48 @@ class AntColony:
             
             antBrain = ant.brain
             self.totalDeadAnts += 1
-            # === LEADERBOARD UPDATE: running average, not max-ever ===
-            # Previously an entry's fitness only ratcheted upward (best life
-            # ever observed), which selected for lucky one-offs: clones of
-            # "champions" delivered <1% of the time. Now every re-evaluation
-            # of a brain already on the board - INCLUDING failed lives with
-            # zero food - blends into a capped running average, so the board
-            # tracks repeatable skill and lucky ghosts sink and fall off.
-            entry_idx = None
-
-            # Exact clones report to their parent's entry by ID (cheap scan).
-            # This is what lets failed lives count against a lucky entry.
-            if ant.antID[1] == "CL" and ant.antID[2] != -1:
-                parent_id = ant.antID[2]
-                for idx, existing_ant in enumerate(self.BestAnts):
-                    if existing_ant["antID"][0] == parent_id:
-                        entry_idx = idx
-                        break
-
-            # Qualifying ants (found food) also match by exact brain content,
-            # so re-discovered identical brains refine one entry instead of
-            # duplicating. (Only done for qualifiers to keep the per-death
-            # cost low; non-qualifying non-clones are new brains anyway.)
-            if entry_idx is None and foodConsumed >= 1:
+            # === LEADERBOARD UPDATE: max-retention ===
+            # An entry keeps the best fitness any of its lives ever achieved.
+            # Lucky exploratory runs matter here: success is rare even for
+            # good brains, so averaging in failed clone lives suppressed the
+            # very lineages that delivered before cloning could amplify them.
+            # (An averaging variant was tried 2026-06-11 and reverted.)
+            if foodConsumed >= 1:
+                # Check if this brain already exists in BestAnts
                 brain_key = tuple(tuple(gene) for gene in antBrain)
+                existing_idx = None
                 for idx, existing_ant in enumerate(self.BestAnts):
                     if brain_key == tuple(tuple(gene) for gene in existing_ant["brain"]):
-                        entry_idx = idx
+                        existing_idx = idx
                         break
 
-            if entry_idx is not None:
-                entry = self.BestAnts[entry_idx]
-                n = min(entry.get("evals", 1), 9)  # cap history: ~EMA, newest life >= 10% weight
-                entry["fitness"] = (entry["fitness"] * n + antFitness) / (n + 1)
-                entry["evals"] = entry.get("evals", 1) + 1
-                if foodConsumed > entry.get("food", 0):
-                    entry["food"] = foodConsumed
-            elif foodConsumed >= 1:
-                # New brain that gathered food - seed the board with it. If the
-                # board is full and it underperforms, the sort+trim in
-                # Repopulate drops it.
-                self.BestAnts.append({"food": foodConsumed, "brain": antBrain,
-                                      "antID": ant.antID, "fitness": antFitness,
-                                      "evals": 1})
+                # For clones, also check if parent exists on leaderboard by antID
+                parent_idx = None
+                if existing_idx is None and ant.antID[1] == "CL" and ant.antID[2] != -1:
+                    parent_id = ant.antID[2]
+                    for idx, existing_ant in enumerate(self.BestAnts):
+                        if existing_ant["antID"][0] == parent_id:
+                            parent_idx = idx
+                            break
 
-            # Update top fitness for tracking purposes (not stagnation)
-            if foodConsumed >= 1 and antFitness > self.lastTopFitness:
-                self.lastTopFitness = antFitness
+                if existing_idx is not None:
+                    # Brain already exists - only update fitness if this one scored higher
+                    if antFitness > self.BestAnts[existing_idx]["fitness"]:
+                        self.BestAnts[existing_idx]["fitness"] = antFitness
+                        self.BestAnts[existing_idx]["food"] = foodConsumed
+                elif parent_idx is not None:
+                    # Clone's parent exists - elevate parent's fitness if clone did better
+                    if antFitness > self.BestAnts[parent_idx]["fitness"]:
+                        self.BestAnts[parent_idx]["fitness"] = antFitness
+                        self.BestAnts[parent_idx]["food"] = foodConsumed
+                else:
+                    # New brain and no parent on board - add it
+                    self.BestAnts.append({"food": foodConsumed, "brain": antBrain,
+                                          "antID": ant.antID, "fitness": antFitness})
+
+                # Update top fitness for tracking purposes (not stagnation)
+                if antFitness > self.lastTopFitness:
+                    self.lastTopFitness = antFitness
         
         
         #remove old pheromone cells and decay both types

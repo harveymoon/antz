@@ -32,6 +32,10 @@ MAX_BRAIN_SIZE = 128
 
 # Pheromone limits
 MAX_PHEROMONE = 10  # Maximum pheromone value per cell
+# Steps of deposit budget after leaving the hive (nest pheromone) or picking
+# up food (food pheromone). Deposit strength falls linearly to 0 over this
+# range, encoding distance-to-source as a followable gradient.
+PHEROMONE_DEPOSIT_RANGE = 150
 
 # Leaderboard size
 MAX_LEADERBOARD_SIZE = 200  # Number of best ants to keep
@@ -99,6 +103,11 @@ class Ant:
         # Track previous cell position to only drop pheromones when moving to new cell
         self.prevCellX = -1
         self.prevCellY = -1
+
+        # Pheromone deposit budgets: steps since last hive visit / food pickup.
+        # Deposit strength decays over PHEROMONE_DEPOSIT_RANGE steps.
+        self.stepsSinceHive = 0
+        self.stepsSincePickup = 0
 
         # Simple recurrence - track last outputs
         self.lastMoveAmount = 0.0  # Last move output (normalized)
@@ -531,8 +540,13 @@ class Ant:
 
     
     def getHiveDirection(self):
-        """getHiveDirection() : returns the relative direction to the hive """
-        return self._cached_hive_direction
+        """getHiveDirection() : relative direction to hive, only while carrying food (else 0) """
+        # Gated by carrying state. The brain is purely additive (no way to
+        # multiply two inputs), so an ungated hive direction dragged every
+        # brain that wired it toward home even when it should explore
+        # outbound. Mirrors foodDir, which is already 0 while carrying.
+        # With both gates, "steer toward goal" is expressible in 2 synapses.
+        return self._cached_hive_direction if self.carryingFood else 0
 
     def getHiveDistance(self):
         """getHiveDistance() : returns the normalized inverse distance to the hive """
@@ -1020,6 +1034,7 @@ class AntColony:
         self.stagnationThreshold = 50000  # Steps without improvement before triggering evolution adjusters
         self.lastTopFitness = 0  # Track the best fitness achieved
         self.lastLowestLeaderboardFitness = 0  # Track the lowest fitness on the leaderboard
+        self._prevLeaderboardSize = 0  # For detecting leaderboard growth (stagnation timer)
         
         # Battery level tracking for Pi mode
         self.batteryLevel = 0
@@ -1458,9 +1473,13 @@ class AntColony:
                 self.lastLowestLeaderboardFitness = current_lowest_fitness
                 self.lastLeaderboardChangeStep = self.totalSteps
                 print(f"[LEADERBOARD IMPROVED] New minimum fitness: {current_lowest_fitness}")
-        elif len(self.BestAnts) > 0:
-            # Leaderboard not full yet, so any addition is progress
+        elif len(self.BestAnts) > self._prevLeaderboardSize:
+            # Leaderboard not full yet: actual growth counts as progress.
+            # (Checking only size growth - not mere non-emptiness - matters:
+            # resetting every step while the board was under 200 entries
+            # permanently disabled stagnation detection.)
             self.lastLeaderboardChangeStep = self.totalSteps
+        self._prevLeaderboardSize = len(self.BestAnts)
         
         probBest = .1
         
@@ -1743,8 +1762,8 @@ class AntColony:
         print("[STAGNATION DETECTED] Applying evolution adjusters...")
         # first clear all ants
         self.ants = []
-        self.maxAnts = 6000
-        # self.create_world()
+        # (Previously this also set maxAnts = 6000, permanently exploding the
+        # population against a fixed food supply and collapsing fitness.)
         
         # Adjuster 1: Introduce completely new random ants (30% of population)
         new_random_ants = int(self.maxAnts * 0.3)
@@ -1891,6 +1910,7 @@ class AntColony:
             ant.ClossestFood = closestFood
 
             if self.isAtHive(ant):
+                ant.stepsSinceHive = 0  # refill nest-pheromone deposit budget
                 if ant.carryingFood:
                     ant.carryingFood = False
                     ant.life += 150  # Reward: keep ant alive to forage again
@@ -1911,7 +1931,9 @@ class AntColony:
                         distance_bonus = int(pickup_distance * 5)
                         ant.add_fitness(distance_bonus, "deliver_distance")
                         ant.foodPickupPos = None  # Reset for next trip
-            ant.pDirection = float(ant.direction)    
+            else:
+                ant.stepsSinceHive += 1  # nest-pheromone deposit budget drains with distance
+            ant.pDirection = float(ant.direction)
             ant.RunBrain()
             
            
@@ -1930,21 +1952,24 @@ class AntColony:
                         ant.posHistory = ant.posHistory[-100:]
            ## end history saving
 
-            # Life decay - reduced if carrying food and on nest pheromone trail
+            # Life decay - carrying ants get a flat discount to help them home.
+            # Foragers (not carrying) walking on a food-pheromone trail burn
+            # less life: trails pay in SURVIVAL (more steps to reach the food
+            # the trail leads to), never in fitness, so they cannot be farmed
+            # for score. This replaces the old trail_step fitness bonus, which
+            # was 54-60% of all fitness awarded and rewarded loitering near
+            # the hive where carriers' return paths converge.
             if ant.carryingFood:
-                # Get nest pheromone at current position (helps ants follow trails home)
-                # nest_pher = self.nestPheromoneGrid.GetVal(int(ant.x), int(ant.y))
-                # if nest_pher and nest_pher > 0:
-                #     # Reduce life cost based on pheromone strength (0-10 scale)
-                #     # Strong trail = up to 80% reduction in energy cost
-                #     reduction = min(0.8, nest_pher / MAX_PHEROMONE * 0.8)
-                #     ant.life -= (1 - reduction)
-                # else:
-                #     ant.life -= 1
-
                 ant.life -= 0.25 #for now, just help ants get back to the hive
+                ant.stepsSincePickup += 1
             else:
-                ant.life -= 1
+                foodPher = self.foodPheromoneGrid.GetVal(int(ant.x), int(ant.y))
+                if foodPher and foodPher > 0:
+                    # Strong trail = up to 80% reduction in life cost
+                    reduction = min(0.8, foodPher / MAX_PHEROMONE * 0.8)
+                    ant.life -= (1 - reduction)
+                else:
+                    ant.life -= 1
 
             
             #check if the ant has a closestFood value, if so detect the distance and if close enough, consume the food
@@ -1972,6 +1997,7 @@ class AntColony:
                                 ant.life = 500
 
                             ant.carryingFood = True
+                            ant.stepsSincePickup = 0  # refill food-pheromone deposit budget
                             # Record pickup position for navigation fitness
                             ant.foodPickupPos = [int(ant.x), int(ant.y)]
                             
@@ -2019,31 +2045,30 @@ class AntColony:
                         self.terrainGrid.SetVal(x_pos, y_pos, new_density)
                 
                 # === PHEROMONE DROPPING ===
-                pheromone_amount = 1.0  # Higher amount since it's dropped less frequently
-                
+                # Deposit strength decays with steps traveled since the source
+                # (hive for nest pheromone, pickup site for food pheromone),
+                # so each grid forms a true gradient pointing back to its
+                # source instead of a flat traffic-density map. Previously
+                # every ant deposited a constant 1.0 forever, which saturated
+                # the nest grid into directionless noise.
                 if ant.carryingFood:
-                    # Ant carrying food drops food pheromone (path to food)
-                    getCurrentPher = self.foodPheromoneGrid.GetVal(x_pos, y_pos)
-                    if getCurrentPher in (0, False, None):
-                        getCurrentPher = 0
-                    newAmmt = getCurrentPher + pheromone_amount
-                    if newAmmt < MAX_PHEROMONE:
-                        self.foodPheromoneGrid.SetVal(x_pos, y_pos, newAmmt)
+                    # Carrier drops food pheromone (gradient points to food)
+                    amount = 1.0 - ant.stepsSincePickup / PHEROMONE_DEPOSIT_RANGE
+                    if amount > 0:
+                        getCurrentPher = self.foodPheromoneGrid.GetVal(x_pos, y_pos)
+                        if getCurrentPher in (0, False, None):
+                            getCurrentPher = 0
+                        self.foodPheromoneGrid.SetVal(
+                            x_pos, y_pos, min(MAX_PHEROMONE, getCurrentPher + amount))
                 else:
-                    # Ant not carrying food drops nest pheromone (path to nest)
-                    getCurrentPher = self.nestPheromoneGrid.GetVal(x_pos, y_pos)
-                    if getCurrentPher in (0, False, None):
-                        getCurrentPher = 0
-                    newAmmt = getCurrentPher + pheromone_amount
-                    if newAmmt < MAX_PHEROMONE:
-                        self.nestPheromoneGrid.SetVal(x_pos, y_pos, newAmmt)
-                    
-                    # Fitness bonus for following food pheromone trails while foraging.
-                    # Scales with trail strength but kept small so trail-walking
-                    # cannot out-pay actually picking up food and delivering it home.
-                    foodPher = self.foodPheromoneGrid.GetVal(x_pos, y_pos)
-                    if foodPher and foodPher > 0:
-                        ant.add_fitness(foodPher * 0.3, "trail_step")
+                    # Forager drops nest pheromone (gradient points to nest)
+                    amount = 1.0 - ant.stepsSinceHive / PHEROMONE_DEPOSIT_RANGE
+                    if amount > 0:
+                        getCurrentPher = self.nestPheromoneGrid.GetVal(x_pos, y_pos)
+                        if getCurrentPher in (0, False, None):
+                            getCurrentPher = 0
+                        self.nestPheromoneGrid.SetVal(
+                            x_pos, y_pos, min(MAX_PHEROMONE, getCurrentPher + amount))
                 
                 # Update previous cell position
                 ant.prevCellX = x_pos
@@ -2173,48 +2198,53 @@ class AntColony:
             
             antBrain = ant.brain
             self.totalDeadAnts += 1
-            # Any ant that gathered at least one food is a candidate for the
-            # leaderboard. If the leaderboard is full and this ant's fitness is
-            # below the cutoff, the periodic sort+trim in Repopulate will drop
-            # it. With an empty/sparse leaderboard, low-fitness food finders
-            # seed the next generation rather than being thrown away.
-            if foodConsumed >= 1:
-                # Check if this brain already exists in BestAnts
-                brain_key = tuple(tuple(gene) for gene in antBrain)
-                existing_idx = None
+            # === LEADERBOARD UPDATE: running average, not max-ever ===
+            # Previously an entry's fitness only ratcheted upward (best life
+            # ever observed), which selected for lucky one-offs: clones of
+            # "champions" delivered <1% of the time. Now every re-evaluation
+            # of a brain already on the board - INCLUDING failed lives with
+            # zero food - blends into a capped running average, so the board
+            # tracks repeatable skill and lucky ghosts sink and fall off.
+            entry_idx = None
+
+            # Exact clones report to their parent's entry by ID (cheap scan).
+            # This is what lets failed lives count against a lucky entry.
+            if ant.antID[1] == "CL" and ant.antID[2] != -1:
+                parent_id = ant.antID[2]
                 for idx, existing_ant in enumerate(self.BestAnts):
-                    existing_brain_key = tuple(tuple(gene) for gene in existing_ant["brain"])
-                    if brain_key == existing_brain_key:
-                        existing_idx = idx
+                    if existing_ant["antID"][0] == parent_id:
+                        entry_idx = idx
                         break
-                
-                # For clones, also check if parent exists on leaderboard by antID
-                parent_idx = None
-                if ant.antID[1] == "CL" and ant.antID[2] != -1:
-                    # This is a clone - look for the parent by ID
-                    parent_id = ant.antID[2]
-                    for idx, existing_ant in enumerate(self.BestAnts):
-                        if existing_ant["antID"][0] == parent_id:
-                            parent_idx = idx
-                            break
-                
-                if existing_idx is not None:
-                    # Brain already exists - only update fitness if this one scored higher
-                    if antFitness > self.BestAnts[existing_idx]["fitness"]:
-                        self.BestAnts[existing_idx]["fitness"] = antFitness
-                        self.BestAnts[existing_idx]["food"] = foodConsumed
-                elif parent_idx is not None:
-                    # Clone's parent exists - elevate parent's fitness if clone did better
-                    if antFitness > self.BestAnts[parent_idx]["fitness"]:
-                        self.BestAnts[parent_idx]["fitness"] = antFitness
-                        self.BestAnts[parent_idx]["food"] = foodConsumed
-                else:
-                    # New brain and no parent on board - add it
-                    self.BestAnts.append({"food":foodConsumed, "brain":antBrain, "antID":ant.antID, "fitness":antFitness})
-                
-                # Update top fitness for tracking purposes (not stagnation)
-                if antFitness > self.lastTopFitness:
-                    self.lastTopFitness = antFitness
+
+            # Qualifying ants (found food) also match by exact brain content,
+            # so re-discovered identical brains refine one entry instead of
+            # duplicating. (Only done for qualifiers to keep the per-death
+            # cost low; non-qualifying non-clones are new brains anyway.)
+            if entry_idx is None and foodConsumed >= 1:
+                brain_key = tuple(tuple(gene) for gene in antBrain)
+                for idx, existing_ant in enumerate(self.BestAnts):
+                    if brain_key == tuple(tuple(gene) for gene in existing_ant["brain"]):
+                        entry_idx = idx
+                        break
+
+            if entry_idx is not None:
+                entry = self.BestAnts[entry_idx]
+                n = min(entry.get("evals", 1), 9)  # cap history: ~EMA, newest life >= 10% weight
+                entry["fitness"] = (entry["fitness"] * n + antFitness) / (n + 1)
+                entry["evals"] = entry.get("evals", 1) + 1
+                if foodConsumed > entry.get("food", 0):
+                    entry["food"] = foodConsumed
+            elif foodConsumed >= 1:
+                # New brain that gathered food - seed the board with it. If the
+                # board is full and it underperforms, the sort+trim in
+                # Repopulate drops it.
+                self.BestAnts.append({"food": foodConsumed, "brain": antBrain,
+                                      "antID": ant.antID, "fitness": antFitness,
+                                      "evals": 1})
+
+            # Update top fitness for tracking purposes (not stagnation)
+            if foodConsumed >= 1 and antFitness > self.lastTopFitness:
+                self.lastTopFitness = antFitness
         
         
         #remove old pheromone cells and decay both types
@@ -2360,41 +2390,42 @@ class AntColony:
                 freshAnts.append(ant)
         bestAntsFound = freshAnts
 
-        # Cache loaded ant brains for reuse during repopulation
+        # Keep only the top performers as the seed pool
+        bestAntsFound = bestAntsFound[:500]
+        print(f'Found {len(bestAntsFound)} unique best ants from files (top 500 kept)')
+        if bestAntsFound:
+            print(f"Best Ant Range: {bestAntsFound[0].get('fitness', 'N/A')} - {bestAntsFound[-1].get('fitness', 'N/A')}")
+
+        # Cache loaded ant brains for reuse during repopulation.
+        # Accept both synapse formats: legacy 5-element and current 6-element
+        # (with cached tanh). Normalize legacy synapses to 6 elements.
         valid_loaded_brains = []
         for ant in bestAntsFound:
             antBrain = ant.get("brain", [])
             if isinstance(antBrain, list) and len(antBrain) > 0:
-                if isinstance(antBrain[0], list) and len(antBrain[0]) == 5:
-                    valid_loaded_brains.append(antBrain)
+                if isinstance(antBrain[0], list) and len(antBrain[0]) in (5, 6):
+                    norm = []
+                    for syn in antBrain:
+                        if len(syn) == 5:
+                            norm.append([syn[0], syn[1], syn[2], syn[3], syn[4], math.tanh(syn[3])])
+                        else:
+                            norm.append(syn)
+                    valid_loaded_brains.append(norm)
         self.loadedAntBrains = valid_loaded_brains
         self.loadMode = True
 
-        #randomize best ants
-        print(f'Found {len(bestAntsFound)} best ants from files')
-        if len(bestAntsFound) > 100:
-            numTopAnts = min(500, len(bestAntsFound))
-            bestAntsFound = bestAntsFound[:numTopAnts] #only keep the top 500 ants
-            print(f"Best Ant Range: {bestAntsFound[0].get('fitness', 'N/A')} - {bestAntsFound[-1].get('fitness', 'N/A')}")
-            
-            random.shuffle(bestAntsFound)
-            #add these ants to the game
-            
-            #top ants getmore new ants
-
-            loadedAnts = 0
-            for i in range(int(quantity)):
-                if self._spawn_loaded_ant():
-                    loadedAnts += 1
-                
-            print(f'Loaded {loadedAnts} best ants from file')
+        loadedAnts = 0
+        for i in range(int(quantity)):
+            if self._spawn_loaded_ant():
+                loadedAnts += 1
+        print(f'Loaded {loadedAnts} best ants from file')
 
     def _spawn_loaded_ant(self):
         if not self.loadedAntBrains:
             return False
         randomPick = random.randint(0, len(self.loadedAntBrains) - 1)
         antBrain = self.loadedAntBrains[randomPick].copy()
-        if not antBrain or not isinstance(antBrain[0], list) or len(antBrain[0]) != 5:
+        if not antBrain or not isinstance(antBrain[0], list) or len(antBrain[0]) not in (5, 6):
             return False
         new_ant = self.add_ant(brain=antBrain, startP=self.hivePos)
         new_ant.antID[1] = 'L' #loaded ant

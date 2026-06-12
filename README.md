@@ -5,9 +5,11 @@ A genetic algorithm-based ant colony simulation where ants evolve neural network
 ## How It Works
 
 Each ant has a simple neural network brain with:
-- **Inputs**: 23 sensors for direction, food location, pheromone trails (nest/food, 4 directions each), terrain density, hive direction/distance, carrying food state
+- **Inputs**: 25 sensors for direction, food location, pheromone trails (nest/food, 4 directions each), terrain density, hive direction/distance, carrying food state, last move/turn. Goal sensors are state-gated: `foodDir` reads 0 while carrying, `getHiveDirection` reads 0 while *not* carrying, so "steer toward current goal" is expressible additively.
 - **Hidden Neurons**: 6 internal neurons that store and process information
 - **Outputs**: Movement (forward/backward) and turning
+
+Pheromones encode distance gradients: deposit strength falls linearly over 150 steps since leaving the hive (nest pheromone) or picking up food (food pheromone), so each grid points back toward its source. Foragers walking on a food-pheromone trail burn up to 80% less life — trails pay in survival, not fitness.
 
 Ants that successfully find food and return it to the hive gain fitness points. When ants die, the best performers are added to a leaderboard (top 200). New ants are spawned using mutations and crossovers of the best-performing brains.
 
@@ -144,7 +146,7 @@ Every ant death appends one JSON line to `dataSave/deaths/{runID}.jsonl`. Each l
 
 - `step`, `antID`, `birth_step`, `lifespan`
 - `food_consumed`, `farthest`, `carrying_at_death`
-- `fitness_final` and the **`fitness_breakdown`** — fitness contribution per source: `pickup`, `deliver_base`, `deliver_distance`, `trail_step`, `death_nav`, `death_exploration`
+- `fitness_final` and the **`fitness_breakdown`** — fitness contribution per source: `pickup`, `deliver_base`, `deliver_distance`, `death_nav`, `death_exploration` (`trail_step` appears in logs from older runs; trail-following now pays in reduced life drain instead of fitness)
 - `brain_size`, `brain_hash`, `color` (RGB)
 - `events` — list of `[step, "pickup"]` / `[step, "deliver"]` entries
 

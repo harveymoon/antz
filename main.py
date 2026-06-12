@@ -32,10 +32,6 @@ MAX_BRAIN_SIZE = 128
 
 # Pheromone limits
 MAX_PHEROMONE = 10  # Maximum pheromone value per cell
-# Steps of deposit budget after leaving the hive (nest pheromone) or picking
-# up food (food pheromone). Deposit strength falls linearly to 0 over this
-# range, encoding distance-to-source as a followable gradient.
-PHEROMONE_DEPOSIT_RANGE = 150
 
 # Leaderboard size
 MAX_LEADERBOARD_SIZE = 200  # Number of best ants to keep
@@ -103,11 +99,6 @@ class Ant:
         # Track previous cell position to only drop pheromones when moving to new cell
         self.prevCellX = -1
         self.prevCellY = -1
-
-        # Pheromone deposit budgets: steps since last hive visit / food pickup.
-        # Deposit strength decays over PHEROMONE_DEPOSIT_RANGE steps.
-        self.stepsSinceHive = 0
-        self.stepsSincePickup = 0
 
         # Simple recurrence - track last outputs
         self.lastMoveAmount = 0.0  # Last move output (normalized)
@@ -946,6 +937,12 @@ class AntColony:
         
         # Pre-cached max diagonal distance for sensor calculations (avoid recomputing every frame)
         self.max_diagonal = math.hypot(self.width, self.height)
+
+        # Pheromone deposit reach: strength falls linearly to 0 over this many
+        # cells of distance from the source. Tied to the world diagonal so
+        # trails span the whole map no matter its size (small floor for tiny
+        # test worlds).
+        self.pheromoneDepositRange = max(60.0, self.max_diagonal)
         
         # Spatial index for O(1) food lookup instead of O(r²) spiral search
         self.foodSpatialIndex = SpatialFoodIndex(GridSize[0], GridSize[1], bucket_size=10)
@@ -1910,7 +1907,6 @@ class AntColony:
             ant.ClossestFood = closestFood
 
             if self.isAtHive(ant):
-                ant.stepsSinceHive = 0  # refill nest-pheromone deposit budget
                 if ant.carryingFood:
                     ant.carryingFood = False
                     ant.life += 150  # Reward: keep ant alive to forage again
@@ -1931,8 +1927,6 @@ class AntColony:
                         distance_bonus = int(pickup_distance * 5)
                         ant.add_fitness(distance_bonus, "deliver_distance")
                         ant.foodPickupPos = None  # Reset for next trip
-            else:
-                ant.stepsSinceHive += 1  # nest-pheromone deposit budget drains with distance
             ant.pDirection = float(ant.direction)
             ant.RunBrain()
             
@@ -1961,7 +1955,6 @@ class AntColony:
             # the hive where carriers' return paths converge.
             if ant.carryingFood:
                 ant.life -= 0.25 #for now, just help ants get back to the hive
-                ant.stepsSincePickup += 1
             else:
                 foodPher = self.foodPheromoneGrid.GetVal(int(ant.x), int(ant.y))
                 if foodPher and foodPher > 0:
@@ -1997,7 +1990,6 @@ class AntColony:
                                 ant.life = 500
 
                             ant.carryingFood = True
-                            ant.stepsSincePickup = 0  # refill food-pheromone deposit budget
                             # Record pickup position for navigation fitness
                             ant.foodPickupPos = [int(ant.x), int(ant.y)]
                             
@@ -2045,15 +2037,25 @@ class AntColony:
                         self.terrainGrid.SetVal(x_pos, y_pos, new_density)
                 
                 # === PHEROMONE DROPPING ===
-                # Deposit strength decays with steps traveled since the source
+                # Deposit strength falls with actual DISTANCE from the source
                 # (hive for nest pheromone, pickup site for food pheromone),
-                # so each grid forms a true gradient pointing back to its
-                # source instead of a flat traffic-density map. Previously
-                # every ant deposited a constant 1.0 forever, which saturated
-                # the nest grid into directionless noise.
+                # scaled to the world via pheromoneDepositRange. This forms a
+                # true spatial gradient pointing back to the source and spans
+                # the whole map regardless of size. (An earlier version
+                # decayed by STEPS since the source, which both failed to
+                # scale with world size and let a wandering ant exhaust its
+                # budget before ever reaching distant food - so far trails
+                # never formed.)
+                rng = self.pheromoneDepositRange
                 if ant.carryingFood:
-                    # Carrier drops food pheromone (gradient points to food)
-                    amount = 1.0 - ant.stepsSincePickup / PHEROMONE_DEPOSIT_RANGE
+                    # Carrier drops food pheromone, strongest at the food
+                    # (gradient points other foragers toward the food).
+                    if ant.foodPickupPos is not None:
+                        dist = math.hypot(x_pos - ant.foodPickupPos[0],
+                                          y_pos - ant.foodPickupPos[1])
+                    else:
+                        dist = 0
+                    amount = 1.0 - dist / rng
                     if amount > 0:
                         getCurrentPher = self.foodPheromoneGrid.GetVal(x_pos, y_pos)
                         if getCurrentPher in (0, False, None):
@@ -2061,8 +2063,10 @@ class AntColony:
                         self.foodPheromoneGrid.SetVal(
                             x_pos, y_pos, min(MAX_PHEROMONE, getCurrentPher + amount))
                 else:
-                    # Forager drops nest pheromone (gradient points to nest)
-                    amount = 1.0 - ant.stepsSinceHive / PHEROMONE_DEPOSIT_RANGE
+                    # Forager drops nest pheromone, strongest at the hive
+                    # (gradient guides carriers home).
+                    dist = math.hypot(x_pos - self.hivePos[0], y_pos - self.hivePos[1])
+                    amount = 1.0 - dist / rng
                     if amount > 0:
                         getCurrentPher = self.nestPheromoneGrid.GetVal(x_pos, y_pos)
                         if getCurrentPher in (0, False, None):
@@ -2243,10 +2247,13 @@ class AntColony:
         
         
         #remove old pheromone cells and decay both types
-        # Batch pheromone decay every 5 frames for performance
+        # Batch pheromone decay every 5 frames for performance.
+        # 0.01/5steps = 0.002/step: a far-out cell visited only every few
+        # hundred steps in a large sparse world holds its trail long enough
+        # to be reinforced before it evaporates.
         if self.totalSteps % 5 == 0:
-            decay_rate = 0.02
-            
+            decay_rate = 0.01
+
             # Vectorized decay for both pheromone grids (much faster than per-cell iteration)
             self.nestPheromoneGrid.decayAll(decay_rate)
             self.foodPheromoneGrid.decayAll(decay_rate)

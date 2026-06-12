@@ -2248,11 +2248,16 @@ class AntColony:
         
         #remove old pheromone cells and decay both types
         # Batch pheromone decay every 5 frames for performance.
-        # 0.01/5steps = 0.002/step: a far-out cell visited only every few
-        # hundred steps in a large sparse world holds its trail long enough
-        # to be reinforced before it evaporates.
+        # 0.02/5steps = 0.004/step. Evaporation must stay brisk: food depletes
+        # at a cluster and replenishes elsewhere, so a trail to a now-empty
+        # spot has to fade fast or foragers (which get a life discount for
+        # following food pheromone) lock onto dead trails and stop exploring.
+        # Halving this to 0.002 caused exactly that - a monotonic foraging
+        # collapse with no recovery. The trail-REACH problem the deposit
+        # rework targeted is solved by distance-based deposits, not by
+        # slowing evaporation.
         if self.totalSteps % 5 == 0:
-            decay_rate = 0.01
+            decay_rate = 0.02
 
             # Vectorized decay for both pheromone grids (much faster than per-cell iteration)
             self.nestPheromoneGrid.decayAll(decay_rate)

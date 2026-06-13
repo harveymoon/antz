@@ -1031,7 +1031,6 @@ class AntColony:
         self.stagnationThreshold = 50000  # Steps without improvement before triggering evolution adjusters
         self.lastTopFitness = 0  # Track the best fitness achieved
         self.lastLowestLeaderboardFitness = 0  # Track the lowest fitness on the leaderboard
-        self._prevLeaderboardSize = 0  # For detecting leaderboard growth (stagnation timer)
         
         # Battery level tracking for Pi mode
         self.batteryLevel = 0
@@ -1470,13 +1469,13 @@ class AntColony:
                 self.lastLowestLeaderboardFitness = current_lowest_fitness
                 self.lastLeaderboardChangeStep = self.totalSteps
                 print(f"[LEADERBOARD IMPROVED] New minimum fitness: {current_lowest_fitness}")
-        elif len(self.BestAnts) > self._prevLeaderboardSize:
-            # Leaderboard not full yet: actual growth counts as progress.
-            # (Checking only size growth - not mere non-emptiness - matters:
-            # resetting every step while the board was under 200 entries
-            # permanently disabled stagnation detection.)
+        elif len(self.BestAnts) > 0:
+            # Leaderboard not full yet, so any addition is progress. While the
+            # board is filling, the stagnation clock stays reset - the
+            # evolution adjuster should only fire when a FULL board genuinely
+            # stops improving, never during the normal fill phase or a
+            # transient foraging bust (which would cull hard-won lineages).
             self.lastLeaderboardChangeStep = self.totalSteps
-        self._prevLeaderboardSize = len(self.BestAnts)
         
         probBest = .1
         
@@ -1800,10 +1799,15 @@ class AntColony:
                 new_ant = self.add_ant(brain=hybrid_brain, startP=self.hivePos)
                 new_ant.antID[1] = "HY"  # Hybrid
         
-        #clear half of the leaderboard
-        if len(self.BestAnts) > 0:
-            print("  • Clearing half of the leaderboard")
-            self.BestAnts = self.BestAnts[:len(self.BestAnts)//2]
+        # NOTE: this used to clear half the leaderboard on every firing.
+        # Because the adjuster resets its own timer and can re-fire every
+        # stagnationThreshold steps, repeated firings halved the board
+        # (200->100->50->...->1->0) and eventually WIPED it, discarding every
+        # hard-won lineage and dropping the colony back to random ants. Under
+        # max-retention the board is our only memory of good brains, so the
+        # adjuster no longer touches it - it injects diversity through the new
+        # random / heavily-mutated / hybrid LIVE ants above, which earn their
+        # way onto the board on merit without destroying what's already there.
 
 
         # Adjuster 4: Create completely new ants with completely new brains

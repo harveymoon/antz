@@ -1031,6 +1031,8 @@ class AntColony:
         self.stagnationThreshold = 50000  # Steps without improvement before triggering evolution adjusters
         self.lastTopFitness = 0  # Track the best fitness achieved
         self.lastLowestLeaderboardFitness = 0  # Track the lowest fitness on the leaderboard
+        self.stagnationCount = 0  # Consecutive stagnation firings; resets on real improvement
+        self._prevLeaderboardSize = 0  # For detecting leaderboard growth (stagnation timer)
         
         # Battery level tracking for Pi mode
         self.batteryLevel = 0
@@ -1468,14 +1470,17 @@ class AntColony:
                 # Leaderboard has improved - new ants have pushed out weaker ones
                 self.lastLowestLeaderboardFitness = current_lowest_fitness
                 self.lastLeaderboardChangeStep = self.totalSteps
+                self.stagnationCount = 0  # genuine progress breaks the escalation chain
                 print(f"[LEADERBOARD IMPROVED] New minimum fitness: {current_lowest_fitness}")
-        elif len(self.BestAnts) > 0:
-            # Leaderboard not full yet, so any addition is progress. While the
-            # board is filling, the stagnation clock stays reset - the
-            # evolution adjuster should only fire when a FULL board genuinely
-            # stops improving, never during the normal fill phase or a
-            # transient foraging bust (which would cull hard-won lineages).
+        elif len(self.BestAnts) > self._prevLeaderboardSize:
+            # Board not full yet: real GROWTH (a new qualifying brain) counts
+            # as progress and resets the clock. Mere non-fullness must NOT
+            # reset it - otherwise a colony stuck below 200 during a bust pins
+            # the timer at zero forever and the escalation (cull, then world
+            # reset on a second stagnation) can never fire. The cull is now
+            # floored so detecting stagnation here can no longer wipe the board.
             self.lastLeaderboardChangeStep = self.totalSteps
+        self._prevLeaderboardSize = len(self.BestAnts)
         
         probBest = .1
         
@@ -1756,11 +1761,20 @@ class AntColony:
     def ApplyEvolutionAdjusters(self):
         """Apply various evolution adjusters to shake up stagnant population"""
         print("[STAGNATION DETECTED] Applying evolution adjusters...")
-        # first clear all ants
-        self.ants = []
-        # (Previously this also set maxAnts = 6000, permanently exploding the
-        # population against a fixed food supply and collapsing fitness.)
-        
+        self.stagnationCount += 1
+        print(f"  • Consecutive stagnation #{self.stagnationCount}")
+
+        # Remove up to 50% of the live population (never more). Keeping the
+        # other half preserves continuity; the freed slots get refilled with
+        # new random / mutated / hybrid ants below and by Repopulate.
+        # (Previously this cleared ALL live ants - and set maxAnts=6000,
+        # exploding the population against a fixed food supply.)
+        if self.ants:
+            remove_n = min(len(self.ants), self.maxAnts // 2)
+            random.shuffle(self.ants)
+            self.ants = self.ants[remove_n:]
+            print(f"  • Removed {remove_n} live ants (<=50% of maxAnts)")
+
         # Adjuster 1: Introduce completely new random ants (30% of population)
         new_random_ants = int(self.maxAnts * 0.3)
         print(f"  • Adding {new_random_ants} completely new random ants")
@@ -1799,15 +1813,30 @@ class AntColony:
                 new_ant = self.add_ant(brain=hybrid_brain, startP=self.hivePos)
                 new_ant.antID[1] = "HY"  # Hybrid
         
-        # NOTE: this used to clear half the leaderboard on every firing.
-        # Because the adjuster resets its own timer and can re-fire every
-        # stagnationThreshold steps, repeated firings halved the board
-        # (200->100->50->...->1->0) and eventually WIPED it, discarding every
-        # hard-won lineage and dropping the colony back to random ants. Under
-        # max-retention the board is our only memory of good brains, so the
-        # adjuster no longer touches it - it injects diversity through the new
-        # random / heavily-mutated / hybrid LIVE ants above, which earn their
-        # way onto the board on merit without destroying what's already there.
+        # Cull the bottom half of the leaderboard so ants that score in the
+        # CURRENT environment can take those slots. The bottom entries are
+        # often stale 1-2-food brains that only scored when food happened to
+        # spawn close and easy early on - dead weight in a changed world.
+        # FLOORED at half the max board size: keep = max(len//2, MAX//2). A
+        # full board (200) loses its weak bottom 100; the floor at 100 means
+        # repeated firings can never cascade the board toward zero (the old
+        # 200->100->...->1->0 wipeout bug). Sorted desc so the best survive.
+        if len(self.BestAnts) > MAX_LEADERBOARD_SIZE // 2:
+            self.BestAnts = sorted(self.BestAnts, key=lambda x: x["fitness"], reverse=True)
+            keep = max(len(self.BestAnts) // 2, MAX_LEADERBOARD_SIZE // 2)
+            removed = len(self.BestAnts) - keep
+            self.BestAnts = self.BestAnts[:keep]
+            print(f"  • Culled {removed} weak leaderboard entries (kept top {keep})")
+
+        # On a SECOND consecutive stagnation, the gene shuffle alone clearly
+        # isn't enough - the world itself may be in a dead-end layout. Reset
+        # terrain/food/pheromones (hive stays) to force a fresh foraging
+        # landscape. stagnationCount resets on genuine leaderboard improvement
+        # (see Repopulate) so this only escalates within an unbroken slump.
+        if self.stagnationCount >= 2:
+            print("  • Second consecutive stagnation - resetting the world")
+            self.reset_world()
+            self.stagnationCount = 0
 
 
         # Adjuster 4: Create completely new ants with completely new brains

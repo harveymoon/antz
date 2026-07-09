@@ -128,7 +128,11 @@ class Ant:
         # self.foodPherFront = 0
         
         self.posHistory = []
-        
+
+        # --- Path recording (pen-plotter SVG/PDF export) ---
+        self.recorded = False   # flagged for the active recording session
+        self.recordPath = []    # full, uncapped birth-to-death path (world coords)
+
         self.DebugBrain = False
         
         self.Color = []
@@ -1042,6 +1046,22 @@ class AntColony:
         # Path mode flag - only store ant history when enabled
         self.pathMode = False
         self.foodEatenPositions = []  # Track where food was picked up (for path mode visualization)
+
+        # --- Path recording -> SVG/PDF export for a pen/drawing machine ---
+        # State machine: IDLE -> RECORDING (flag every newly spawned ant) ->
+        # DRAINING (stopped flagging; wait for all flagged ants to finish their
+        # FULL life) -> save. Because only ants BORN during RECORDING are
+        # captured, every exported path is a complete birth-to-death run - never
+        # a partial "second half" of an ant that was already wandering.
+        self.recording = False        # actively flagging newly spawned ants
+        self.recordDraining = False   # stopped; waiting for in-flight ants to die
+        self.recordedPaths = []       # finalized polylines: list of [x, y] world coords
+        self.recordLiveCount = 0      # recorded ants still alive (save fires at 0)
+        self.recordSession = 0        # increments per recording; used in the filename
+        self.recordStartStep = 0
+        self.recordMinPoints = 3      # drop degenerate paths (barely moved before dying)
+        self.recordPointCap = 4000    # per-ant safety cap so a stuck ant can't bloat memory
+        self.recordMaxPaths = 200000  # hard ceiling: auto-stop-and-save to avoid runaway RAM
         
         # World reset settings - regenerate terrain and move hive periodically
         self.worldResetInterval = 0  # Steps between world resets (0 = disabled)
@@ -1153,9 +1173,22 @@ class AntColony:
         
         #load color
         ant.SetColor()
-        
+
         self.ants.append(ant)
-        
+
+        # Flag this ant for the active recording session. Only ants born while
+        # recording is live get captured, so their path is complete birth-to-death.
+        if self.recording:
+            if len(self.recordedPaths) >= self.recordMaxPaths:
+                # Runaway guard: too many paths buffered - auto-stop and let it drain.
+                print(f"[REC] Hit {self.recordMaxPaths} paths - auto-stopping to save.")
+                self.recording = False
+                self.recordDraining = True
+            else:
+                ant.recorded = True
+                ant.recordPath = [[ant.x, ant.y]]
+                self.recordLiveCount += 1
+
         return ant
         # print(f'added new ant with brain {ant.brain}')
 
@@ -1428,7 +1461,13 @@ class AntColony:
             ant.prevCellX = -1
             ant.prevCellY = -1
             ant.foodPickupPos = None
-        
+            # The ant is being teleported to the new hive. If it's being recorded,
+            # bank the path so far and start a fresh segment from the new spot -
+            # otherwise the export would draw a straight line across the whole
+            # canvas from its old position to the hive.
+            if ant.recorded:
+                self._finalizeRecordPath(ant, alive_after=True)
+
         # Update reset tracking. Reset stagnation timer too: a fresh world is a
         # fresh starting point, so the no-improvement clock should not carry over.
         self.lastWorldReset = self.totalSteps
@@ -1436,8 +1475,156 @@ class AntColony:
 
         print(f"  • Terrain regenerated with {len(self.terrainGrid.listActive())} blocks")
         print("✅ World reset complete!")
-                
-           
+
+
+    # ==================================================================
+    # Path recording -> SVG/PDF export for a pen/drawing machine
+    # ==================================================================
+    def toggleRecording(self):
+        """Start/stop recording ant movement paths (V key).
+
+        IDLE  -> RECORDING : every ant spawned from now on is captured.
+        RECORDING -> DRAINING : stop flagging new ants, but keep recording the
+                                already-flagged ones until they all die, THEN
+                                write the SVG + PDF.
+        While DRAINING the toggle is ignored so a session can't be started on
+        top of one that is still finishing its ants.
+        """
+        if self.recordDraining:
+            print(f"[REC] Still finishing previous recording "
+                  f"({self.recordLiveCount} ants alive, {len(self.recordedPaths)} "
+                  f"paths banked) - toggle ignored.")
+            return
+
+        if not self.recording:
+            self.recording = True
+            self.recordSession += 1
+            self.recordedPaths = []
+            self.recordLiveCount = 0
+            self.recordStartStep = self.totalSteps
+            print(f"[REC *] Recording started (session {self.recordSession}). "
+                  f"Ants spawned from now until you stop will be captured.")
+        else:
+            self.recording = False
+            self.recordDraining = True
+            print(f"[REC stop] Recording stopped. Draining {self.recordLiveCount} "
+                  f"in-flight ants; the file saves once they all die.")
+            if self.recordLiveCount <= 0:
+                self._saveRecording()
+
+    def _finalizeRecordPath(self, ant, alive_after=False):
+        """Bank a recorded ant's accumulated path into recordedPaths.
+
+        alive_after=True  : the ant lives on (world-reset teleport) - keep it
+                            flagged and restart its segment from the current spot.
+        alive_after=False : the ant died / was culled - unflag it and drop the
+                            live counter, which triggers the pending save at 0.
+        """
+        if not ant.recorded:
+            return
+        if len(ant.recordPath) >= self.recordMinPoints:
+            self.recordedPaths.append(ant.recordPath)
+        if alive_after:
+            ant.recordPath = [[ant.x, ant.y]]
+        else:
+            ant.recorded = False
+            ant.recordPath = []
+            self.recordLiveCount -= 1
+            if self.recordDraining and self.recordLiveCount <= 0:
+                self._saveRecording()
+
+    def _saveRecording(self):
+        """Write the buffered paths to SVG (for the plotter) + PDF, then reset."""
+        self.recordDraining = False
+        paths = [p for p in self.recordedPaths if len(p) >= self.recordMinPoints]
+        self.recordedPaths = []
+        if not paths:
+            print("[REC] Nothing to save (no completed paths were captured).")
+            return
+        rec_dir = os.path.join("dataSave", "recordings")
+        try:
+            os.makedirs(rec_dir, exist_ok=True)
+            base = f"rec_{self.runID}_{self.recordSession:03d}"
+            svg_path = os.path.join(rec_dir, base + ".svg")
+            pdf_path = os.path.join(rec_dir, base + ".pdf")
+            self._writeSVG(svg_path, paths)
+            self._writePDF(pdf_path, paths)
+            total_pts = sum(len(p) for p in paths)
+            print(f"[REC saved] {len(paths)} paths / {total_pts} points:")
+            print(f"          {svg_path}")
+            print(f"          {pdf_path}")
+        except Exception as e:
+            print(f"[REC] Save FAILED: {e}")
+
+    def _writeSVG(self, path, paths):
+        """One SVG per recording. World tile coords map straight to the viewBox
+        (SVG y-down matches world y-down). Physical size is in mm so the plotter
+        has a real scale; rescale in your plotter software as needed."""
+        w, h = float(self.width), float(self.height)
+        sw = max(0.15, w / 800.0)  # stroke ~1px when rendered ~800px wide
+        out = []
+        out.append('<?xml version="1.0" encoding="UTF-8"?>')
+        out.append(f'<svg xmlns="http://www.w3.org/2000/svg" '
+                   f'width="{w:.1f}mm" height="{h:.1f}mm" '
+                   f'viewBox="0 0 {w:.1f} {h:.1f}">')
+        out.append(f'<g fill="none" stroke="black" stroke-width="{sw:.3f}" '
+                   f'stroke-linejoin="round" stroke-linecap="round">')
+        for p in paths:
+            pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in p)
+            out.append(f'<polyline points="{pts}"/>')
+        out.append('</g>')
+        # Hive marker on its own layer - delete this line if you don't want it plotted.
+        hx, hy = self.hivePos
+        out.append(f'<circle cx="{hx:.2f}" cy="{hy:.2f}" r="{max(1.0, w * 0.01):.2f}" '
+                   f'fill="none" stroke="red" stroke-width="{sw:.3f}"/>')
+        out.append('</svg>')
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(out))
+
+    def _writePDF(self, path, paths):
+        """Minimal dependency-free vector PDF (one page, stroked polylines).
+        PDF origin is bottom-left / y-up, so world y is flipped. World is scaled
+        so its longer side is ~720pt."""
+        w, h = float(self.width), float(self.height)
+        scale = 720.0 / max(w, h)
+        pw, ph = w * scale, h * scale
+        sw = max(0.3, scale * (w / 800.0))
+
+        ops = [f"{sw:.3f} w", "1 J", "1 j", "0 0 0 RG"]  # width, round cap/join, black
+        for p in paths:
+            if len(p) < 2:
+                continue
+            x0, y0 = p[0]
+            ops.append(f"{x0 * scale:.2f} {(h - y0) * scale:.2f} m")
+            for x, y in p[1:]:
+                ops.append(f"{x * scale:.2f} {(h - y) * scale:.2f} l")
+            ops.append("S")
+        content = ("\n".join(ops)).encode("latin-1", "replace")
+
+        objs = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw:.2f} {ph:.2f}] "
+             f"/Contents 4 0 R >>").encode("latin-1"),
+            (b"<< /Length " + str(len(content)).encode("ascii") + b" >>\n"
+             b"stream\n" + content + b"\nendstream"),
+        ]
+        out = bytearray(b"%PDF-1.4\n")
+        offsets = []
+        for i, body in enumerate(objs, start=1):
+            offsets.append(len(out))
+            out += f"{i} 0 obj\n".encode("ascii") + body + b"\nendobj\n"
+        xref_pos = len(out)
+        n = len(objs) + 1
+        out += f"xref\n0 {n}\n".encode("ascii")
+        out += b"0000000000 65535 f \n"
+        for off in offsets:
+            out += f"{off:010d} 00000 n \n".encode("ascii")
+        out += (f"trailer\n<< /Size {n} /Root 1 0 R >>\n"
+                f"startxref\n{xref_pos}\n%%EOF\n").encode("ascii")
+        with open(path, "wb") as f:
+            f.write(out)
+
     def Repopulate(self):
         """repopulate the ants with the best ants"""
         # print("Repopulating")
@@ -1772,7 +1959,13 @@ class AntColony:
         if self.ants:
             remove_n = min(len(self.ants), self.maxAnts // 2)
             random.shuffle(self.ants)
+            removed_slice = self.ants[:remove_n]
             self.ants = self.ants[remove_n:]
+            # These ants are culled without passing through the death loop, so
+            # bank any recorded paths here or the drain counter never reaches 0.
+            for a in removed_slice:
+                if a.recorded:
+                    self._finalizeRecordPath(a, alive_after=False)
             print(f"  • Removed {remove_n} live ants (<=50% of maxAnts)")
 
         # Adjuster 1: Introduce completely new random ants (30% of population)
@@ -1979,6 +2172,16 @@ class AntColony:
                         ant.posHistory = ant.posHistory[-100:]
            ## end history saving
 
+            # Recording capture: full-life path for flagged ants, independent of
+            # pathMode and never truncated (except the per-ant safety cap). Sample
+            # only on meaningful movement (>=2 tiles) to keep the exported polyline
+            # lean enough for a plotter.
+            if ant.recorded:
+                lp = ant.recordPath[-1]
+                if (ant.x - lp[0]) ** 2 + (ant.y - lp[1]) ** 2 >= 4.0:
+                    if len(ant.recordPath) < self.recordPointCap:
+                        ant.recordPath.append([ant.x, ant.y])
+
             # Life decay - carrying ants get a flat discount to help them home.
             # Foragers (not carrying) walking on a food-pheromone trail burn
             # less life: trails pay in SURVIVAL (more steps to reach the food
@@ -2154,6 +2357,10 @@ class AntColony:
         
         # Process dead ants
         for ant in dead_ants:
+            # Recording: a flagged ant just finished its full life - bank its path.
+            if ant.recorded:
+                self._finalizeRecordPath(ant, alive_after=False)
+
             # If debugbrain ant died, auto-select new ant if debug mode is enabled
             if ant.DebugBrain:
                 if self.brainDebugEnabled:
@@ -4140,6 +4347,9 @@ class Game:
                     # C key - cull bottom 50% of leaderboard
                     if event.key == pygame.K_c:
                         self.antColony.cullLeaderboard()
+                    # V key - toggle path recording (SVG/PDF export for a plotter)
+                    if event.key == pygame.K_v:
+                        self.antColony.toggleRecording()
 
             #run 5 times between each draw
             #not in pi mode
@@ -4203,6 +4413,19 @@ class Game:
                 self.lifeLineScroll, _ = self.antColony.drawLifeLines(
                     self.screen, self.lifeLineScroll, self.lifeLineAutoStick
                 )
+
+            # Recording indicator (V key) - always visible, even in path/trail view
+            ac = self.antColony
+            if ac.recording or ac.recordDraining:
+                rfont = ac._get_font(26)
+                if ac.recording:
+                    rlabel = f'● REC  paths:{len(ac.recordedPaths)}  live:{ac.recordLiveCount}'
+                    rcol = (255, 60, 60)
+                else:
+                    rlabel = f'■ SAVING  live:{ac.recordLiveCount}  paths:{len(ac.recordedPaths)}'
+                    rcol = (255, 180, 60)
+                rtext = rfont.render(rlabel, True, rcol)
+                self.screen.blit(rtext, (10, self.screenSize[1] - 34))
 
             # Draw battery indicator directly on screen (not affected by scaling)
             # Minimal 20px bar on bottom edge, no text

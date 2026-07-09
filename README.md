@@ -112,6 +112,7 @@ Or double-click `organize_best.bat` to keep top 1%.
 | `A` | Increase maximum ant count by 1000 |
 | `U` | Fast-forward 1000 simulation steps |
 | `C` | Cull bottom 50% of leaderboard |
+| `V` | Start/stop recording ant paths to SVG + PDF (for a pen/drawing machine) |
 | `+` / `=` | Increase target FPS |
 | `-` | Decrease target FPS |
 | `X` | Shutdown Raspberry Pi (Pi mode only) |
@@ -176,6 +177,27 @@ Press `L` during a graphical run to overlay a scrolling list of dead ants. Each 
 Default mode is `[SCROLL]` — the viewport is anchored to the rows you scrolled to, so new deaths appended below don't move what you're reading. Press `F` to toggle `[FOLLOW]` mode where the view sticks to the latest deaths. Any scroll-wheel input drops follow mode. `HOME` jumps to the oldest entry, `END` snaps to the newest without enabling follow.
 
 The death log file persists across runs, so you can also analyze prior runs offline.
+
+## Recording paths for a drawing machine (SVG + PDF)
+
+Press `V` to **start** recording, `V` again to **stop**. The result is written to
+`dataSave/recordings/` as both an `.svg` (for a pen plotter / drawing machine) and
+a `.pdf` (dependency-free, for preview/print). Paths are in world-tile coordinates,
+so the drawing has the same proportions as the field.
+
+The recording only captures **complete, birth-to-death ant paths**:
+
+- When you **start**, only ants spawned *from that moment on* are recorded — ants
+  already wandering are skipped, so you never get a partial "second half" of a run.
+- When you **stop**, no new ants are added to the recording, but every ant that was
+  spawned during the window keeps drawing its path until it dies. The file is saved
+  only once **all** of those ants have died — so the last drawings are whole too.
+
+While recording, a red `● REC` indicator (bottom-left) shows the number of paths
+banked and how many recorded ants are still alive; after you stop it turns amber
+(`■ SAVING`) until the last ant dies and the files are written. A world reset mid-
+recording (`R`, or a stagnation reset) breaks each path cleanly instead of drawing a
+line across the canvas. Files are named `rec_{runID}_{session}.svg` / `.pdf`.
 
 ## Ant Types
 

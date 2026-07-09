@@ -1474,7 +1474,7 @@ class AntColony:
         self.lastLeaderboardChangeStep = self.totalSteps
 
         print(f"  • Terrain regenerated with {len(self.terrainGrid.listActive())} blocks")
-        print("✅ World reset complete!")
+        print("[OK] World reset complete!")
 
 
     # ==================================================================
@@ -2049,7 +2049,7 @@ class AntColony:
         # Reset stagnation counter
         self.lastLeaderboardChangeStep = self.totalSteps
         self.lastLowestLeaderboardFitness = 0  # Reset so any leaderboard improvement will be detected
-        print("✅ Evolution adjusters applied! System should be less stagnant now.")
+        print("[OK] Evolution adjusters applied! System should be less stagnant now.")
         return
 
 

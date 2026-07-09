@@ -30,6 +30,8 @@ python main.py [options]
 | Argument | Description |
 |----------|-------------|
 | `--load` | Load best ants from saved data files in `dataSave/best/` folder |
+| `--single-brain FILE` | Monoculture test: seed **every** ant with one brain from a best-ants JSON file and disable evolution (no mutation/crossover/stagnation). Lets you watch a single brain forage in a clean sim. |
+| `--brain-rank N` | Which ranked brain to use from `--single-brain` (0 = highest fitness, the default) |
 | `--headless` | Run without graphics. Auto-saves every 60 seconds. Press `Ctrl+C` to stop |
 | `--test` | Test mode: 1 ant, 1 FPS, brain debug enabled |
 | `--paths` | Start with trail/path view mode enabled |
@@ -47,6 +49,13 @@ python main.py
 
 # Continue training from saved ants
 python main.py --load
+
+# Monoculture test: all ants are clones of the single best brain in a file,
+# evolution disabled - watch how that one brain behaves in a clean sim
+python main.py --single-brain dataSave/best/89d1b64d_20260612-234427.json
+
+# Test the 3rd-best brain from a file instead of the best
+python main.py --single-brain dataSave/best/89d1b64d_20260612-234427.json --brain-rank 2
 
 # Fast training without graphics
 python main.py --headless --load

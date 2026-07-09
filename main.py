@@ -1017,6 +1017,12 @@ class AntColony:
         self.loadMode = False
         self.loadedAntBrains = []
         self.loadedAntInjectChance = 0.25
+
+        # Monoculture test mode: when set to a brain (list of synapses), the whole
+        # colony is seeded with clones of just this one brain and evolution is
+        # switched off (no mutation/crossover/stagnation churn) so a single best
+        # brain can be observed in a clean sim. See LoadSingleBrain + Repopulate.
+        self.monoBrain = None
         
         self.TopPheromone = 0
 
@@ -1629,6 +1635,16 @@ class AntColony:
         """repopulate the ants with the best ants"""
         # print("Repopulating")
         # currentAnts = len(self.ants)
+
+        # Monoculture test: keep refilling with clones of the one brain, no
+        # evolution. Each ant gets its own copy so nothing is shared/mutated.
+        if self.monoBrain is not None:
+            while len(self.ants) < self.maxAnts:
+                a = self.add_ant(brain=[list(s) for s in self.monoBrain],
+                                 startP=self.hivePos)
+                a.antID[1] = "L"
+            return {'ants': len(self.ants), 'probbest': 1}
+
         bestAntNum = len(self.BestAnts)
         leaderboard_not_full = bestAntNum < MAX_LEADERBOARD_SIZE
         
@@ -2530,8 +2546,9 @@ class AntColony:
         self.UpdateTime = endTime - startTime
         
         # Check for stagnation and apply evolution adjusters if needed
+        # (skipped entirely in monoculture test mode - no evolution).
         steps_since_improvement = self.totalSteps - self.lastLeaderboardChangeStep
-        if steps_since_improvement >= self.stagnationThreshold:
+        if self.monoBrain is None and steps_since_improvement >= self.stagnationThreshold:
             self.ApplyEvolutionAdjusters()
         
         # Check for world reset interval
@@ -2578,6 +2595,48 @@ class AntColony:
 
         # print('update done')
 
+
+    def LoadSingleBrain(self, quantity, filepath, rank=0):
+        """Monoculture test: seed the ENTIRE colony with ONE brain and keep it
+        pure (no evolution). Picks the rank-th best brain (0 = highest fitness)
+        from a best-ants JSON file, clones it to every ant, and sets monoBrain so
+        Repopulate keeps respawning that same brain and stagnation is skipped."""
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+        except (IOError, json.JSONDecodeError) as e:
+            print(f"[MONO] Could not read {filepath}: {e}")
+            return
+        ants = data.get("BestAnts", data) if isinstance(data, dict) else data
+        ants = [a for a in ants if isinstance(a, dict) and a.get("brain")]
+        ants.sort(key=lambda a: a.get("fitness", a.get("food", 0) * 10), reverse=True)
+        if not ants:
+            print(f"[MONO] No usable brains in {filepath}")
+            return
+        rank = max(0, min(rank, len(ants) - 1))
+        chosen = ants[rank]
+
+        # Normalize synapses to the current 6-element format (cache tanh).
+        norm = []
+        for syn in chosen["brain"]:
+            if len(syn) == 5:
+                norm.append([syn[0], syn[1], syn[2], syn[3], syn[4], math.tanh(syn[3])])
+            else:
+                norm.append(list(syn))
+        self.monoBrain = norm
+        self.loadMode = False  # not the mixed best-ants load path
+
+        print(f"[MONO] Single-brain test: rank {rank} of {len(ants)} "
+              f"(fitness {chosen.get('fitness', '?')}, food {chosen.get('food', '?')}, "
+              f"{len(norm)} synapses) from {os.path.basename(filepath)}")
+        # Drop the random ants create_world() seeded at construction - the colony
+        # must be nothing but clones of the test brain.
+        self.ants = []
+        for _ in range(int(quantity)):
+            a = self.add_ant(brain=[list(s) for s in norm], startP=self.hivePos)
+            a.antID[1] = "L"
+        print(f"[MONO] Spawned {len(self.ants)} identical clones. "
+              f"Evolution is OFF - pure monoculture.")
 
     def LoadBestAnts(self, quantity, max_files=25):
         """load the best ants from a random selection of files
@@ -4057,6 +4116,10 @@ class Game:
         parser.add_argument('--headless', action='store_true', help='Headless mode: no rendering, runs as fast as possible')
         parser.add_argument('--fullscreen', action='store_true', help='Run fullscreen on the chosen monitor (auto-detect resolution)')
         parser.add_argument('--monitor', type=int, default=0, help='Monitor index for --fullscreen (0=primary, 1=second, ...)')
+        parser.add_argument('--single-brain', type=str, default=None, metavar='FILE',
+                            help='Monoculture test: seed ALL ants with one brain from this best-ants JSON file and disable evolution')
+        parser.add_argument('--brain-rank', type=int, default=0,
+                            help='Which ranked brain to use from --single-brain (0=highest fitness)')
         args = parser.parse_args()
         self.fullscreenMode = False
         self.fullscreenMonitor = 0
@@ -4187,8 +4250,10 @@ class Game:
         # Set path mode on colony if drawPaths is enabled
         self.antColony.pathMode = self.drawPaths
         
-        # Only load best ants if --load flag is set
-        if args.load:
+        # Seed the colony: single-brain monoculture test, mixed best-ants load, or fresh.
+        if args.single_brain:
+            self.antColony.LoadSingleBrain(self.maxAnts, args.single_brain, args.brain_rank)
+        elif args.load:
             self.antColony.LoadBestAnts( self.maxAnts )
         else:
             print('Starting fresh (use --load to load saved ants)')
@@ -4199,7 +4264,9 @@ class Game:
 
         #first run update 20000 times
         lastPercent = 0
-        if self.isPi == False and not self.testMode:
+        # Skip the random-ant injection in monoculture mode - the colony must stay
+        # pure clones of the single test brain.
+        if self.isPi == False and not self.testMode and not args.single_brain:
             newAnts = 500
             #add new ants before training
             print(f'Adding {newAnts} new random ants')

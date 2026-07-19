@@ -3843,7 +3843,33 @@ class AntColony:
                 f.write(json.dumps(saveObj, indent=4))
         except Exception as e:
             print(f'Error saving file: {e}')
+
+        # Rotate: keep only this run's newest few autosaves. saveData writes a
+        # new timestamped file every cycle (~60s), each holding the full 200-ant
+        # leaderboard, so without this the dataSave folder grows without bound
+        # (tens of GB over a multi-day run). Max-retention means only the latest
+        # save matters; a few are kept as a safety margin.
+        self._pruneOldAutosaves(keep=5)
         return
+
+    def _pruneOldAutosaves(self, keep=5):
+        """Delete this run's older autosave files, keeping the newest `keep`.
+        Filenames are {runID}_{YYYYMMDD-HHMMSS}.json, so sorting by name is
+        chronological. Only touches THIS run's files - never other runs."""
+        try:
+            prefix = f'{self.runID}_'
+            files = [f for f in os.listdir('dataSave')
+                     if f.startswith(prefix) and f.endswith('.json')]
+            if len(files) <= keep:
+                return
+            files.sort()
+            for old in files[:-keep]:
+                try:
+                    os.remove(os.path.join('dataSave', old))
+                except OSError:
+                    pass
+        except Exception:
+            pass
 
     def generateReport(self):
         """Generate a diagnostic report analyzing the leaderboard for stagnation indicators."""

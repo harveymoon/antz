@@ -1441,16 +1441,22 @@ class AntColony:
         self._generate_walls()
     
     def reset_world(self):
-        """Reset the world: regenerate terrain, clear pheromones, reset ants (hive stays in place)"""
+        """Reset the world: move the hive to a new spot, regenerate terrain, clear pheromones, reset ants"""
         print("[WORLD RESET] Regenerating terrain...")
-        
+
+        # Move the nest to a fresh random location. Done BEFORE terrain/wall
+        # generation so the cleared area (hive_clear_radius) forms around the
+        # NEW hive, and before the ants below are teleported onto it.
+        self.hivePos = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+        print(f"  • Nest moved to {self.hivePos}")
+
         # Clear all grids
         self.terrainGrid.Clear()
         self.nestPheromoneGrid.Clear()
         self.foodPheromoneGrid.Clear()
         self.foodGrid.Clear()
         self.foodSpatialIndex.clear()
-        
+
         # Regenerate terrain using shared helper
         self._generate_terrain()
         
@@ -2755,11 +2761,11 @@ class AntColony:
         screen.blit(fade, (0, 0))
 
         # Carriers drawn at full brain color. Foragers drawn at the same color
-        # pre-blended toward the dark background so they look ~10% opacity
+        # pre-blended toward the dark background so they read as dimmer
         # without using SRCALPHA accumulation, which was saturating the trail
         # and breaking the natural fade-out.
         BG = 25  # matches the fade-target gray
-        DIM = 0.10  # forager opacity factor
+        DIM = 0.25  # forager opacity factor (raised from 0.10 - they were washing out to brown)
 
         def _dim(c):
             return (

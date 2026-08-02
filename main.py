@@ -965,6 +965,11 @@ class AntColony:
         minDimension = min(self.width, self.height)
         # self.foodSearchRadius = max(3, min(10, minDimension // 9))
         self.foodSearchRadius = 10  # Keep it constant for now
+
+        # Minimum distance food may spawn from the hive (tiles). Keeps food from
+        # spawning right on top of the nest. Pi mode lowers this (smaller screen)
+        # so food can be placed closer - see the Pi setup in Game.__init__.
+        self.minFoodHiveDist = 25
         
         # Max terrain density - higher = blocks take longer to dig through
         # At 0.5 reduction per ant, max density of 50 requires 100 ants to fully clear
@@ -1865,8 +1870,8 @@ class AntColony:
                 if foodPosRand[1] < 0 or foodPosRand[1] >= self.height:
                     continue
                 distToHive = math.hypot(foodPosRand[0] - self.hivePos[0], foodPosRand[1] - self.hivePos[1])
-               
-                if distToHive > 25:
+
+                if distToHive > self.minFoodHiveDist:
                     # Only place food on low-density terrain (density <= half max)
                     terrain_density = self.terrainGrid.GetVal(foodPosRand[0], foodPosRand[1])
                     
@@ -4278,7 +4283,12 @@ class Game:
         print('Creating Ant Colony')
         # Use renderSize for the ant colony so the grid matches the render resolution
         self.antColony = AntColony(self.renderSize, self.maxAnts, tileSize)
-        
+
+        # Pi mode: smaller screen, so let food spawn closer to the hive.
+        if self.isPi:
+            self.antColony.minFoodHiveDist = 12
+            print(f'Pi mode: food min distance from hive set to {self.antColony.minFoodHiveDist}')
+
         # Set path mode on colony if drawPaths is enabled
         self.antColony.pathMode = self.drawPaths
         
@@ -4620,7 +4630,7 @@ class Game:
                     # FPS too low - reduce ants proportionally
                     reduction = max(1, int(abs(fps_deviation) * 0.5))
                     self.maxAnts -= reduction
-                    min_ants = 10 if self.isPi else 100
+                    min_ants = 50 if self.isPi else 100  # 10 was too sparse on Pi
                     if self.maxAnts < min_ants:
                         self.maxAnts = min_ants
                     self.antColony.maxAnts = self.maxAnts

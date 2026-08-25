@@ -2783,11 +2783,10 @@ class AntColony:
 
         fade = pygame.Surface((self.screenSize[0], self.screenSize[1]))
         fade.fill((25, 25, 25))
-        # if isPi:
-        #     fade.set_alpha(10)
-        # else:
-        #     fade.set_alpha(5)
-        fade.set_alpha(5)
+        # Lower alpha = slower fade = trails linger longer. Pi only stamps a
+        # trail once (when an ant dies), so it needs a slower fade than desktop
+        # - which reinforces every ant's path every frame - to stay visible.
+        fade.set_alpha(2 if isPi else 5)
         screen.blit(fade, (0, 0))
 
         # Carriers drawn at full brain color. Foragers drawn at the same color
@@ -2795,7 +2794,9 @@ class AntColony:
         # without using SRCALPHA accumulation, which was saturating the trail
         # and breaking the natural fade-out.
         BG = 25  # matches the fade-target gray
-        DIM = 0.25  # forager opacity factor (raised from 0.10 - they were washing out to brown)
+        # Forager opacity factor. Pi trails are sparse (drawn only on death) so
+        # foragers are kept brighter there than on desktop to stay readable.
+        DIM = 0.55 if isPi else 0.25
 
         def _dim(c):
             return (
@@ -2809,7 +2810,7 @@ class AntColony:
                 if ant.life <= 1 and len(ant.posHistory) > 1:
                     points = [self.WorldToScreen(pos) for pos in ant.posHistory]
                     color = ant.Color if ant.carryingFood else _dim(ant.Color)
-                    pygame.draw.lines(screen, color, False, points, 1)
+                    pygame.draw.lines(screen, color, False, points, 2)
         else:
             for ant in self.ants:
                 if len(ant.posHistory) > 1:

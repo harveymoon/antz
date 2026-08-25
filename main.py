@@ -2789,34 +2789,19 @@ class AntColony:
         fade.set_alpha(2 if isPi else 5)
         screen.blit(fade, (0, 0))
 
-        # Carriers drawn at full brain color. Foragers drawn at the same color
-        # pre-blended toward the dark background so they read as dimmer
-        # without using SRCALPHA accumulation, which was saturating the trail
-        # and breaking the natural fade-out.
-        BG = 25  # matches the fade-target gray
-        # Forager opacity factor. Pi trails are sparse (drawn only on death) so
-        # foragers are kept brighter there than on desktop to stay readable.
-        DIM = 0.55 if isPi else 0.25
-
-        def _dim(c):
-            return (
-                int(BG + (c[0] - BG) * DIM),
-                int(BG + (c[1] - BG) * DIM),
-                int(BG + (c[2] - BG) * DIM),
-            )
-
+        # Trails are just each ant's walked movement history - draw them plainly
+        # at full brain color. No opacity/dimming: the carrying-vs-foraging idea
+        # belongs to the pheromone grids, not to the walked-path trails.
         if isPi:
             for ant in self.ants:
                 if ant.life <= 1 and len(ant.posHistory) > 1:
                     points = [self.WorldToScreen(pos) for pos in ant.posHistory]
-                    color = ant.Color if ant.carryingFood else _dim(ant.Color)
-                    pygame.draw.lines(screen, color, False, points, 2)
+                    pygame.draw.lines(screen, ant.Color, False, points, 2)
         else:
             for ant in self.ants:
                 if len(ant.posHistory) > 1:
                     points = [self.WorldToScreen(pos) for pos in ant.posHistory]
-                    color = ant.Color if ant.carryingFood else _dim(ant.Color)
-                    pygame.draw.lines(screen, color, False, points, 1)
+                    pygame.draw.lines(screen, ant.Color, False, points, 1)
         
         # Draw active food as single dark-green pixels (one per cell, ignoring stack count)
         for fx, fy in self.foodGrid.active_cells:

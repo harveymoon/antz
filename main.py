@@ -988,11 +988,13 @@ class AntColony:
             self.minFoodHiveDist = 7
             self.hiveClearRadius = 6
             self.hiveSoftRadius = 16
-            # Raise the food kept on the field (cap + the 50% replenish floor
-            # both scale from maxFood) so the smaller Pi world stays busier.
-            # Capped at 65% of field tiles: doubling (x2) saturated the tiny
-            # 1600-tile field and roughly halved the Pi's step rate.
-            self.maxFood = min(int(self.maxFood * 1.5), int(self.fieldArea * 0.65))
+            # Keep a lot more food on the field so the small Pi world looks busy
+            # (both the cap and the 50% replenish floor scale from maxFood).
+            # Raised again by request; food stacks per cell so the cap can exceed
+            # the tile count. Trade-off: more food = less starvation, so fewer
+            # ants die and the step rate drops - the dirt-erosion reset keeps the
+            # world turning over. See the antz-pi-food-saturation note.
+            self.maxFood = min(int(self.maxFood * 3), int(self.fieldArea * 1.3))
 
         # Max terrain density - higher = blocks take longer to dig through
         # At 0.5 reduction per ant, max density of 50 requires 100 ants to fully clear
@@ -1063,7 +1065,8 @@ class AntColony:
         self.topFoodFound = 0
         self.totalSteps = 0
         self.initialWallCount = 0  # Set by _generate_walls; used to trigger reset on >50% wall erosion
-        
+        self.initialDirt = 0  # Total diggable dirt at world gen; triggers reset when >40% is dug away
+
         # Stagnation detection variables
         self.lastLeaderboardChangeStep = 0  # Step when leaderboard last changed
         self.stagnationThreshold = 50000  # Steps without improvement before triggering evolution adjusters
@@ -1463,6 +1466,17 @@ class AntColony:
                 count += 1
         return count
 
+    def _sumDirt(self):
+        """Return the total diggable dirt on the map (sum of positive terrain
+        density). Walls (WALL_DENSITY = -1) and empty cells are ignored, so this
+        tracks how much soil the ants have dug away over time."""
+        total = 0.0
+        for x, y in self.terrainGrid.active_cells:
+            v = self.terrainGrid.grid[x][y]
+            if v > 0:
+                total += v
+        return total
+
     def create_world(self):
         """Create the world with ants and varied terrain densities"""
         # Add initial ants
@@ -1471,10 +1485,13 @@ class AntColony:
         
         # Generate terrain
         self._generate_terrain()
-        
+
         # Generate impassable walls in + pattern
         self._generate_walls()
-    
+
+        # Snapshot the diggable dirt so we can detect when ants have dug too much
+        self.initialDirt = self._sumDirt()
+
     def reset_world(self):
         """Reset the world: move the hive to a new spot, regenerate terrain, clear pheromones, reset ants"""
         print("[WORLD RESET] Regenerating terrain...")
@@ -1497,7 +1514,10 @@ class AntColony:
         
         # Regenerate walls
         self._generate_walls()
-        
+
+        # Re-snapshot the diggable dirt for the fresh world
+        self.initialDirt = self._sumDirt()
+
         # Reset all ants to new hive position
         for ant in self.ants:
             ant.x = self.hivePos[0] + random.random() * 3
@@ -2604,6 +2624,16 @@ class AntColony:
             current_walls = self._countWalls()
             if current_walls < self.initialWallCount * 0.5:
                 print(f"[WALL EROSION] Walls dropped to {current_walls}/{self.initialWallCount} (<50%) - resetting world")
+                self.reset_world()
+
+        # Reset the world once the ants have dug away more than 40% of the dirt
+        # (i.e. remaining diggable soil drops below 60% of the starting amount).
+        # Same 500-step cadence so the full-grid scan stays cheap.
+        elif self.totalSteps % 500 == 0 and self.initialDirt > 0:
+            current_dirt = self._sumDirt()
+            if current_dirt < self.initialDirt * 0.6:
+                pct_gone = 100 * (1 - current_dirt / self.initialDirt)
+                print(f"[DIRT EROSION] {pct_gone:.0f}% of dirt dug away (<60% remains) - resetting world")
                 self.reset_world()
 
         if self.totalSteps % 1000 == 0:

@@ -988,6 +988,9 @@ class AntColony:
             self.minFoodHiveDist = 7
             self.hiveClearRadius = 6
             self.hiveSoftRadius = 16
+            # Double the food kept on the field (cap + the 50% replenish floor
+            # both scale from maxFood) so the smaller Pi world stays busier.
+            self.maxFood *= 2
 
         # Max terrain density - higher = blocks take longer to dig through
         # At 0.5 reduction per ant, max density of 50 requires 100 ants to fully clear

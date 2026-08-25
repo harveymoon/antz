@@ -920,8 +920,9 @@ class WorldGrid:
             self.active_cells.discard(cell)
 
 class AntColony:
-    def __init__(self, _screenSize, _maxAnts, _tileSize):
+    def __init__(self, _screenSize, _maxAnts, _tileSize, isPi=False):
         self.maxAnts = _maxAnts
+        self.isPi = isPi
         self.ants = []
         #hive pos is 80percent in the corner right
         self.screenSize = _screenSize
@@ -970,7 +971,24 @@ class AntColony:
         # spawning right on top of the nest. Pi mode lowers this (smaller screen)
         # so food can be placed closer - see the Pi setup in Game.__init__.
         self.minFoodHiveDist = 25
-        
+
+        # Terrain thinning around the nest. Within hiveClearRadius the ground is
+        # left as open air; between hiveClearRadius and hiveSoftRadius the terrain
+        # density is scaled up linearly from 0 to full, so the nest is never
+        # surrounded by heavy soil. Default keeps the old behavior (no soft ring);
+        # Pi mode widens both.
+        self.hiveClearRadius = 5
+        self.hiveSoftRadius = 5
+
+        # Pi mode: smaller screen, so let food spawn closer to the hive and keep a
+        # wider, thinned ring of soft soil around the nest (never heavy soil).
+        # Set here (before create_world() generates terrain) so the very first
+        # world already reflects it, not just after a reset.
+        if self.isPi:
+            self.minFoodHiveDist = 7
+            self.hiveClearRadius = 6
+            self.hiveSoftRadius = 16
+
         # Max terrain density - higher = blocks take longer to dig through
         # At 0.5 reduction per ant, max density of 50 requires 100 ants to fully clear
         self.maxTerrainDensity = 150
@@ -1273,9 +1291,9 @@ class AntColony:
             for y in range(self.height):
                 # Calculate distance from hive
                 dist_to_hive = math.hypot(x - self.hivePos[0], y - self.hivePos[1])
-                
-                # Keep area around hive clear (radius 10)
-                if dist_to_hive < 5:
+
+                # Keep the immediate area around the hive clear (open air)
+                if dist_to_hive < self.hiveClearRadius:
                     continue  # Leave as 0 (open air)
                 
                 # Multi-octave noise for natural terrain patches
@@ -1304,7 +1322,14 @@ class AntColony:
                 
                 # Clamp to valid range - creates flat empty and max-density patches
                 density = max(0, min(max_d, density))
-                
+
+                # Soft-thin the ring just outside the clear zone so the nest is
+                # never walled in by heavy soil. Scales density 0 -> full across
+                # [hiveClearRadius, hiveSoftRadius]. No-op when the two are equal.
+                if dist_to_hive < self.hiveSoftRadius and self.hiveSoftRadius > self.hiveClearRadius:
+                    falloff = (dist_to_hive - self.hiveClearRadius) / (self.hiveSoftRadius - self.hiveClearRadius)
+                    density *= max(0.0, min(1.0, falloff))
+
                 # Only set non-zero densities (saves memory in sparse grid)
                 if density > 0.5:
                     self.set_terrain(x, y, int(density))
@@ -4282,12 +4307,13 @@ class Game:
            
         print('Creating Ant Colony')
         # Use renderSize for the ant colony so the grid matches the render resolution
-        self.antColony = AntColony(self.renderSize, self.maxAnts, tileSize)
+        self.antColony = AntColony(self.renderSize, self.maxAnts, tileSize, isPi=self.isPi)
 
-        # Pi mode: smaller screen, so let food spawn closer to the hive.
+        # Pi-mode food/terrain tuning is applied inside AntColony.__init__ (before
+        # the first terrain is generated); just report it here.
         if self.isPi:
-            self.antColony.minFoodHiveDist = 12
-            print(f'Pi mode: food min distance from hive set to {self.antColony.minFoodHiveDist}')
+            print(f'Pi mode: food min distance from hive set to {self.antColony.minFoodHiveDist}, '
+                  f'hive clear/soft radius {self.antColony.hiveClearRadius}/{self.antColony.hiveSoftRadius}')
 
         # Set path mode on colony if drawPaths is enabled
         self.antColony.pathMode = self.drawPaths

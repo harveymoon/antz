@@ -4198,7 +4198,10 @@ class Game:
                             help='Monoculture test: seed ALL ants with one brain from this best-ants JSON file and disable evolution')
         parser.add_argument('--brain-rank', type=int, default=0,
                             help='Which ranked brain to use from --single-brain (0=highest fitness)')
+        parser.add_argument('--profile', type=int, default=0, metavar='N',
+                            help='Profile N frames with cProfile, print the hotspots, then exit')
         args = parser.parse_args()
+        self.profileFrames = max(0, args.profile)
         self.fullscreenMode = False
         self.fullscreenMonitor = 0
         if args.fullscreen and not args.pi and not args.headless:
@@ -4417,10 +4420,16 @@ class Game:
         print(f"View mode -> {['normal', 'paths', 'debug'][self.viewModeIdx]}")
 
     def run(self):
-        
+
         running = True
         print('Running PYGAME instance now')
         ticks = 0
+        profiler = None
+        if self.profileFrames:
+            import cProfile
+            profiler = cProfile.Profile()
+            print(f'[PROFILE] Profiling {self.profileFrames} frames, then exiting...')
+            profiler.enable()
         while running:
 
      
@@ -4691,6 +4700,24 @@ class Game:
                 self.clock.tick(1)  # 1 FPS = 1 second delay per frame for debugging
             else:
                 self.clock.tick()
+
+            # Profiling mode: stop after N frames, dump hotspots, exit
+            if profiler is not None and ticks >= self.profileFrames:
+                profiler.disable()
+                import pstats, io
+                for sortkey in ('tottime', 'cumtime'):
+                    s = io.StringIO()
+                    ps = pstats.Stats(profiler, stream=s)
+                    ps.sort_stats(sortkey).print_stats(30)
+                    print(f'\n===== PROFILE ({sortkey}) top 30 =====')
+                    # Keep console output ASCII-safe
+                    print(s.getvalue().encode('ascii', 'replace').decode('ascii'))
+                try:
+                    profiler.dump_stats('dataSave/profile_last.pstats')
+                    print('[PROFILE] Raw stats saved to dataSave/profile_last.pstats')
+                except Exception as e:
+                    print(f'[PROFILE] Could not save stats file: {e}')
+                running = False
 
         self._releaseGpio()
         self.antColony.closeDeathLog()

@@ -1047,6 +1047,12 @@ class AntColony:
         self.hiveClearRadius = 5
         self.hiveSoftRadius = 5
 
+        # Terrain noise shape (see _generate_terrain). Higher frequency =
+        # smaller, more turbulent dirt islands; higher empty bias = sparser
+        # coverage. Defaults preserve the desktop look.
+        self.terrainPatchFrequency = 0.1
+        self.terrainEmptyBias = 0.3
+
         # Pi mode: smaller screen, so let food spawn closer to the hive and keep a
         # wider, thinned ring of soft soil around the nest (never heavy soil).
         # Set here (before create_world() generates terrain) so the very first
@@ -1055,6 +1061,12 @@ class AntColony:
             self.minFoodHiveDist = 7
             self.hiveClearRadius = 6
             self.hiveSoftRadius = 16
+            # More turbulent terrain: the 20x80 field is tiny, so default-size
+            # noise patches (~11 tiles) cover half the screen in solid dirt.
+            # Triple the frequency for small scattered islands, and bias a bit
+            # more empty so open corridors run between them.
+            self.terrainPatchFrequency = 0.3
+            self.terrainEmptyBias = 0.45
             # Keep a lot more food on the field so the small Pi world looks busy
             # (both the cap and the 50% replenish floor scale from maxFood).
             # Raised again by request; food stacks per cell so the cap can exceed
@@ -1362,10 +1374,12 @@ class AntColony:
         around the hive clear. Used by both create_world() and reset_world().
         """
         max_d = self.maxTerrainDensity
-        
-        # Terrain patch size - lower frequency = larger patches
-        # 0.09 means patches roughly 11 tiles wide
-        patch_frequency = 0.1
+
+        # Terrain patch size - lower frequency = larger patches.
+        # Default 0.1 means patches roughly 11 tiles wide; Pi mode raises this
+        # (smaller field) for smaller, more turbulent dirt islands.
+        patch_frequency = self.terrainPatchFrequency
+        empty_bias = self.terrainEmptyBias
         
         # Random phase offsets for this world (makes each world unique)
         phase_x = random.random() * 1000
@@ -1384,7 +1398,7 @@ class AntColony:
                 # Octave 1: Large patches (primary structure)
                 noise1 = math.sin((x + phase_x) * patch_frequency) * math.cos((y + phase_y) * patch_frequency)
                 # Bias more empty
-                noise1 -= 0.3
+                noise1 -= empty_bias
                 
                 # Octave 2: Medium detail (secondary features)
                 noise2 = math.sin((x + phase_x) * patch_frequency * 2.5) * math.cos((y + phase_y) * patch_frequency * 2.5) * 0.4

@@ -39,6 +39,9 @@ MAX_LEADERBOARD_SIZE = 200  # Number of best ants to keep
 # Report generation settings
 REPORT_INTERVAL = 10000  # Generate diagnostic report every N steps
 
+# Precomputed constant for the hot turn()/direction math
+TWO_PI = math.pi * 2
+
 
 def BrainToColor(brain):
     """Convert a brain to a color using the force values of the first 3 synapses"""
@@ -95,6 +98,7 @@ class Ant:
         self.navigationFitness = 0  # Store calculated navigation fitness
         
         self.FarthestTraveled = 0 # the farthest the ant has traveled from the hive give a fitness bonus when dead
+        self._move_budget = 1.0  # per-frame movement budget, reset each RunBrain
         
         # Track previous cell position to only drop pheromones when moving to new cell
         self.prevCellX = -1
@@ -354,16 +358,56 @@ class Ant:
         # cannot accumulate enough velocity to skip over walls.
         self._move_budget = 1.0
 
-        # Cache locals for performance
+        if self.DebugBrain:
+            return self._RunBrainDebug()
+
+        # Hot path: no debug branches, no per-synapse len() checks (synapses are
+        # normalized to 6 elements in add_ant), locals cached. This loop runs
+        # ants x synapses times per frame and dominates the sim's CPU time.
         brain = self.brain
         neurons = self.neurons
         input_sources = self.InputSources
         output_dests = self.OutputDestinations
-        debug = self.DebugBrain
         num_inputs = len(input_sources)
         num_neurons = len(neurons)
         num_outputs = len(output_dests)
-        
+        tanh = math.tanh
+
+        for synapseN in brain:
+            if synapseN[0]:
+                val = input_sources[synapseN[1] % num_inputs]()
+            else:
+                val = tanh(neurons[synapseN[1] % num_neurons])
+
+            output_value = val * synapseN[5]
+
+            if synapseN[4]:
+                output_dests[synapseN[2] % num_outputs](output_value)
+            else:
+                outIdx = synapseN[2] % num_neurons
+                v = neurons[outIdx] + output_value
+                if v > 10.0:
+                    v = 10.0
+                elif v < -10.0:
+                    v = -10.0
+                neurons[outIdx] = v
+
+        # Apply neuron decay to prevent indefinite accumulation
+        for i in range(num_neurons):
+            neurons[i] *= 0.9
+
+    def _RunBrainDebug(self):
+        """Verbose reference implementation of RunBrain, used when brain debug
+        is enabled. Keeps the hot path above free of debug branches."""
+        brain = self.brain
+        neurons = self.neurons
+        input_sources = self.InputSources
+        output_dests = self.OutputDestinations
+        debug = True
+        num_inputs = len(input_sources)
+        num_neurons = len(neurons)
+        num_outputs = len(output_dests)
+
         for i in range(len(brain)):
             synapseN = brain[i]
             if debug:
@@ -622,7 +666,15 @@ class Ant:
         many synapses firing into the move output cannot teleport the ant.
         Movement is walked in substeps so a diagonal step can't slip between
         perpendicular walls."""
-        self.lastMoveAmount = max(-1.0, min(1.0, amount))
+        # Branch chains instead of max()/min()/abs() builtins: this method can
+        # fire dozens of times per ant per frame, and the call overhead of the
+        # builtins was a measurable share of Pi CPU time.
+        if amount > 1.0:
+            self.lastMoveAmount = 1.0
+        elif amount < -1.0:
+            self.lastMoveAmount = -1.0
+        else:
+            self.lastMoveAmount = amount
 
         # Per-call clamp
         if amount > 0.8:
@@ -636,11 +688,13 @@ class Ant:
             return
 
         # Per-frame cumulative cap: spend from the budget set by RunBrain.
-        budget = getattr(self, "_move_budget", 1.0)
+        budget = self._move_budget
         if budget <= 0:
             return
-        if abs(amount) > budget:
+        abs_amount = amount if amount >= 0 else -amount
+        if abs_amount > budget:
             amount = budget if amount > 0 else -budget
+            abs_amount = budget
 
         addX = math.cos(self.direction) * amount
         addY = math.sin(self.direction) * amount
@@ -649,6 +703,7 @@ class Ant:
         SUBSTEPS = 2
         sub_dx = addX / SUBSTEPS
         sub_dy = addY / SUBSTEPS
+        sub_moved = abs_amount / SUBSTEPS
         wall = self.colony.WALL_DENSITY
         terrain = self.colony.terrainGrid
         cw = self.colony.width
@@ -679,26 +734,29 @@ class Ant:
                     break
 
             cx, cy = nx, ny
-            moved += abs(amount) / SUBSTEPS
+            moved += sub_moved
 
         self.x = cx
         self.y = cy
-        self._move_budget = max(0.0, budget - moved)
-
-        # Track farthest distance from hive for the death-time exploration bonus
-        self.FarthestTraveled = max(
-            self.FarthestTraveled,
-            math.hypot(self.x - self.colony.hivePos[0], self.y - self.colony.hivePos[1])
-        )
+        remaining = budget - moved
+        self._move_budget = remaining if remaining > 0.0 else 0.0
+        # NOTE: FarthestTraveled is updated once per frame in AntColony.update()
+        # (after RunBrain) instead of per move() call - move() can fire dozens
+        # of times per frame and the hypot was a measurable cost.
     
     def turn(self, direction):
         """turn() : turn the ant in a direction """
-        # Store normalized amount for recurrence input
-        self.lastTurnAmount = max(-1.0, min(1.0, direction))
-        
-        self.direction += direction
-        # Normalize direction to [0, 2π) using modulo
-        self.direction = self.direction % (2 * math.pi)
+        # Store normalized amount for recurrence input (branch chain: cheaper
+        # than max(min()) builtins in this very hot method)
+        if direction > 1.0:
+            self.lastTurnAmount = 1.0
+        elif direction < -1.0:
+            self.lastTurnAmount = -1.0
+        else:
+            self.lastTurnAmount = direction
+
+        # Normalize direction to [0, 2*pi) using modulo
+        self.direction = (self.direction + direction) % TWO_PI
 
 
 class SpatialFoodIndex:
@@ -830,44 +888,52 @@ class WorldGrid:
         self.grid = [[0] * height for _ in range(width)]
         # Track active cells for O(k) listing instead of O(width*height)
         self.active_cells = set()
-    
+        # Running total of all cell values so sumValues() is O(1) instead of
+        # O(active cells). Every mutator below keeps it in sync.
+        self.total = 0
+
     def RemoveVal(self, x, y):
         """ remove a value from the grid """
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return False
         if self.grid[x][y] == 0:
             return False
+        self.total -= self.grid[x][y]
         self.grid[x][y] = 0
         self.active_cells.discard((x, y))
         return True
-    
+
     def DecrementVal(self, x, y, amount=1):
         """ decrement a numeric value from the grid (for food stacking) """
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return False
-        
+
         current_val = self.grid[x][y]
         if current_val == 0:
             return False
-            
+
         new_val = current_val - amount
         if new_val <= 0:
+            self.total -= current_val
             self.grid[x][y] = 0
             self.active_cells.discard((x, y))
         else:
+            self.total -= amount
             self.grid[x][y] = new_val
         return True
-    
+
     def IncrementVal(self, x, y, amount=1):
         """ increment a numeric value in the grid (for food stacking) """
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return
         self.grid[x][y] += amount
+        self.total += amount
         self.active_cells.add((x, y))
-    
+
     def SetVal(self, x, y, val):
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return
+        self.total += val - self.grid[x][y]
         self.grid[x][y] = val
         # Track active cells
         if val and val != 0:
@@ -885,18 +951,16 @@ class WorldGrid:
             for j in range(len(row)):
                 row[j] = 0
         self.active_cells.clear()
-    
+        self.total = 0
+
     def listActive(self):
         """ Return list of active cells - O(active_count) """
         return [[x, y, self.grid[x][y]] for x, y in self.active_cells]
-    
+
     def sumValues(self):
-        """ Return total sum of all values in active cells """
-        total = 0
-        for x, y in self.active_cells:
-            total += self.grid[x][y]
-        return total
-    
+        """ Return total sum of all values in active cells - O(1) """
+        return self.total
+
     def decayAll(self, decay_rate):
         """
         Decay all active cells by decay_rate.
@@ -904,17 +968,20 @@ class WorldGrid:
         """
         if not self.active_cells:
             return
-        
+
         # Decay active cells and track which ones to remove
         cells_to_remove = []
         for x, y in self.active_cells:
-            new_val = self.grid[x][y] - decay_rate
+            old_val = self.grid[x][y]
+            new_val = old_val - decay_rate
             if new_val <= 0:
+                self.total -= old_val
                 self.grid[x][y] = 0
                 cells_to_remove.append((x, y))
             else:
+                self.total -= decay_rate
                 self.grid[x][y] = new_val
-        
+
         # Remove decayed cells from active set
         for cell in cells_to_remove:
             self.active_cells.discard(cell)
@@ -1084,6 +1151,11 @@ class AntColony:
         self.pathMode = False
         self.foodEatenPositions = []  # Track where food was picked up (for path mode visualization)
 
+        # Cached terrain render layer (see drawAnts): rebuilt at most every 30
+        # draws, invalidated on world reset.
+        self._terrainSurf = None
+        self._terrainSurfAge = 0
+
         # --- Path recording -> SVG/PDF export for a pen/drawing machine ---
         # State machine: IDLE -> RECORDING (flag every newly spawned ant) ->
         # DRAINING (stopped flagging; wait for all flagged ants to finish their
@@ -1202,7 +1274,11 @@ class AntColony:
         
         
         if brain:
-            ant.brain = brain
+            # Normalize every synapse to the 6-element format (cached tanh) once
+            # at creation, so RunBrain's hot loop never needs a per-synapse
+            # len() check. Legacy 5-element synapses get their tanh appended.
+            ant.brain = [s if len(s) > 5 else (s[0], s[1], s[2], s[3], s[4], math.tanh(s[3]))
+                         for s in brain]
         else:
             antID[1] = 'N'
             ant.create_brain()  # Uses global MIN_BRAIN_SIZE and MAX_BRAIN_SIZE
@@ -1517,6 +1593,9 @@ class AntColony:
 
         # Re-snapshot the diggable dirt for the fresh world
         self.initialDirt = self._sumDirt()
+
+        # Invalidate the cached terrain render layer - the world changed
+        self._terrainSurf = None
 
         # Reset all ants to new hive position
         for ant in self.ants:
@@ -2199,12 +2278,19 @@ class AntColony:
             # Find closest food using spatial index - O(f_local) instead of O(r²)
             closestFood = [-1,-1]
 
-            # Only search for food if ant is NOT carrying food
+            # Only search for food if ant is NOT carrying food.
+            # The search runs every 2nd step per ant (staggered by ant ID) and
+            # the previous target is reused in between - safe because the
+            # consume path verifies the cell via DecrementVal, so a 1-step
+            # stale target can never produce a phantom pickup.
             if not ant.carryingFood:
-                aX = int(ant.x)
-                aY = int(ant.y)
-                # Use spatial index for fast nearest-food lookup
-                closestFood = self.foodSpatialIndex.find_nearest(aX, aY, self.foodSearchRadius)
+                if (self.totalSteps + ant.antID[0]) & 1:
+                    closestFood = ant.ClossestFood
+                else:
+                    aX = int(ant.x)
+                    aY = int(ant.y)
+                    # Use spatial index for fast nearest-food lookup
+                    closestFood = self.foodSpatialIndex.find_nearest(aX, aY, self.foodSearchRadius)
 
             # Always update ClossestFood - reset to [-1,-1] if no food nearby
             ant.ClossestFood = closestFood
@@ -2232,6 +2318,13 @@ class AntColony:
                         ant.foodPickupPos = None  # Reset for next trip
             ant.pDirection = float(ant.direction)
             ant.RunBrain()
+
+            # Track farthest distance from hive for the death-time exploration
+            # bonus. Done once per frame here rather than inside every move()
+            # call (which can fire dozens of times per RunBrain pass).
+            fdist = math.hypot(ant.x - self.hivePos[0], ant.y - self.hivePos[1])
+            if fdist > ant.FarthestTraveled:
+                ant.FarthestTraveled = fdist
             
            
            
@@ -2941,38 +3034,57 @@ class AntColony:
                 pass
             self.LastSave = time.time()
 
-        # Draw terrain - simple cyberpunk style (cool gray + cyan accent)
-        for terrain in self.terrainGrid.listActive():
-            tpxy = self.WorldToScreen(terrain)
-            tx, ty = int(tpxy[0]), int(tpxy[1])
+        # Draw terrain - simple cyberpunk style (cool gray + cyan accent).
+        # The terrain layer is CACHED: it only changes slowly (ant digging), so
+        # it is redrawn to an offscreen surface at most every 30 draws and
+        # blitted each frame. This cuts ~1000 rect calls per frame on a mostly-
+        # dirt field, which was a measurable share of Pi render time.
+        self._terrainSurfAge += 1
+        needRebuild = (self._terrainSurf is None
+                       or self._terrainSurfAge >= 30
+                       or self._terrainSurf.get_size() != screen.get_size())
+        if needRebuild:
+            self._terrainSurfAge = 0
+            tsurf = self._terrainSurf
+            if tsurf is None or tsurf.get_size() != screen.get_size():
+                tsurf = pygame.Surface(screen.get_size())
+                tsurf.set_colorkey((0, 0, 0))  # black = transparent (terrain colors are never pure black)
+                self._terrainSurf = tsurf
+            tsurf.fill((0, 0, 0))
             ts = int(self.TileSize)
-            
-            density = terrain[2]
-            
-            # Draw impassable walls in a cold grey color
-            if density == self.WALL_DENSITY:
-                # Dark cold grey base
-                pygame.draw.rect(screen, (40, 80, 88), (tx, ty, ts, ts))
-                # Lighter cold grey border with blue tint
-                pygame.draw.rect(screen, (100, 110, 125), (tx, ty, ts, ts), 1)
-                continue
-            
-            if density <= 0:
-                continue
-            
-            norm_density = min(density / self.maxTerrainDensity, 1.0)
-            
-            # Cool gray fill - darker = denser
-            gray = int(30 + (1 - norm_density) * 40)
-            cyan_tint = int(norm_density * 60)
-            terrain_color = (gray, gray + cyan_tint // 3, gray + cyan_tint // 2)
-            pygame.draw.rect(screen, terrain_color, (tx, ty, ts, ts))
-            
-            # Single cyan dot for high density blocks only
-            if norm_density > 0.6:
-                cx, cy = tx + ts // 2, ty + ts // 2
-                dot_brightness = int(80 + norm_density * 100)
-                screen.set_at((cx, cy), (0, dot_brightness, dot_brightness + 20))
+            tgrid = self.terrainGrid.grid
+            wall = self.WALL_DENSITY
+            maxTD = self.maxTerrainDensity
+            for (gx, gy) in self.terrainGrid.active_cells:
+                density = tgrid[gx][gy]
+                tpxy = self.WorldToScreen([gx, gy])
+                tx, ty = int(tpxy[0]), int(tpxy[1])
+
+                # Draw impassable walls in a cold grey color
+                if density == wall:
+                    # Dark cold grey base
+                    pygame.draw.rect(tsurf, (40, 80, 88), (tx, ty, ts, ts))
+                    # Lighter cold grey border with blue tint
+                    pygame.draw.rect(tsurf, (100, 110, 125), (tx, ty, ts, ts), 1)
+                    continue
+
+                if density <= 0:
+                    continue
+
+                norm_density = min(density / maxTD, 1.0)
+
+                # Cool gray fill - darker = denser
+                gray = int(30 + (1 - norm_density) * 40)
+                cyan_tint = int(norm_density * 60)
+                terrain_color = (gray, gray + cyan_tint // 3, gray + cyan_tint // 2)
+                pygame.draw.rect(tsurf, terrain_color, (tx, ty, ts, ts))
+
+                # Single cyan dot for high density blocks only
+                if norm_density > 0.6:
+                    cx, cy = tx + ts // 2, ty + ts // 2
+                    dot_brightness = int(80 + norm_density * 100)
+                    tsurf.set_at((cx, cy), (0, dot_brightness, dot_brightness + 20))
+        screen.blit(self._terrainSurf, (0, 0))
 
         # Draw food on top of terrain
         for food in self.foodGrid.listActive():

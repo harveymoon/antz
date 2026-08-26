@@ -2831,7 +2831,7 @@ class AntColony:
             for ant in self.ants:
                 if ant.life <= 1 and len(ant.posHistory) > 1:
                     points = [self.WorldToScreen(pos) for pos in ant.posHistory]
-                    pygame.draw.lines(screen, ant.Color, False, points, 2)
+                    pygame.draw.lines(screen, ant.Color, False, points, 1)
         else:
             for ant in self.ants:
                 if len(ant.posHistory) > 1:

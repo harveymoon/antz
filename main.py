@@ -2818,25 +2818,20 @@ class AntColony:
 
         fade = pygame.Surface((self.screenSize[0], self.screenSize[1]))
         fade.fill((25, 25, 25))
-        # Lower alpha = slower fade = trails linger longer. Pi only stamps a
-        # trail once (when an ant dies), so it needs a slower fade than desktop
-        # - which reinforces every ant's path every frame - to stay visible.
-        fade.set_alpha(2 if isPi else 5)
+        # Lower alpha = slower fade = trails linger longer. Every living ant's
+        # path is redrawn each frame (both Pi and desktop), so a moderate fade
+        # keeps trails visible without letting them pile up into a bright smear.
+        fade.set_alpha(5)
         screen.blit(fade, (0, 0))
 
-        # Trails are just each ant's walked movement history - draw them plainly
-        # at full brain color. No opacity/dimming: the carrying-vs-foraging idea
-        # belongs to the pheromone grids, not to the walked-path trails.
-        if isPi:
-            for ant in self.ants:
-                if ant.life <= 1 and len(ant.posHistory) > 1:
-                    points = [self.WorldToScreen(pos) for pos in ant.posHistory]
-                    pygame.draw.lines(screen, ant.Color, False, points, 1)
-        else:
-            for ant in self.ants:
-                if len(ant.posHistory) > 1:
-                    points = [self.WorldToScreen(pos) for pos in ant.posHistory]
-                    pygame.draw.lines(screen, ant.Color, False, points, 1)
+        # Trails are just each ant's walked movement history - draw every ant
+        # that has moved, plainly at full brain color. No opacity/dimming: the
+        # carrying-vs-foraging idea belongs to the pheromone grids, not the
+        # walked-path trails.
+        for ant in self.ants:
+            if len(ant.posHistory) > 1:
+                points = [self.WorldToScreen(pos) for pos in ant.posHistory]
+                pygame.draw.lines(screen, ant.Color, False, points, 1)
         
         # Draw active food as single dark-green pixels (one per cell, ignoring stack count)
         for fx, fy in self.foodGrid.active_cells:

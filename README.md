@@ -40,6 +40,9 @@ python main.py [options]
 | `--scale N` | Pixel scale factor for Pi / fullscreen mode (default: 2). `1` = native, higher = render at lower res and stretch |
 | `--fullscreen` | Fullscreen on a desktop monitor; resolution auto-detected |
 | `--monitor N` | Which monitor to use with `--fullscreen` (0=primary, 1=second, ...) |
+| `--size WxH` | Window/world size in pixels for windowed or headless runs, e.g. `2000x2000` (default `1000x1000`; ignored with `--pi`/`--fullscreen`) |
+| `--capture N` | Timelapse: save a clean PNG frame (no HUD) every N sim steps to `dataSave/captures/{runID}/` |
+| `--profile N` | Run N frames under cProfile, print hotspots, save `dataSave/profile_last.pstats`, exit |
 
 ### Examples
 
@@ -66,6 +69,29 @@ python main.py --test
 # Run on Raspberry Pi
 python main.py --pi --load
 ```
+
+## Timelapse recording
+
+Capture the run as a frame sequence and assemble it into a video:
+
+```bash
+# 2000x2000 world, one frame every 100 steps (or double-click record_timelapse.bat)
+python main.py --size 2000x2000 --capture 100
+
+# Pass extra flags through the bat file too:
+record_timelapse.bat --load --paths
+```
+
+Frames are saved as `dataSave/captures/{runID}/frame_000001.png`, `frame_000002.png`, ...
+sequentially numbered and HUD-free, so one run = one folder = one video. Assemble with
+ffmpeg from inside the capture folder:
+
+```bash
+ffmpeg -framerate 30 -i frame_%06d.png -c:v libx264 -pix_fmt yuv420p timelapse.mp4
+```
+
+At 2000x2000 the world is 250x250 tiles (~7.7x the default 1000x1000 / 125x125 world),
+so expect a slower step rate and plan the capture interval accordingly.
 
 ## Parallel Training
 

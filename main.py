@@ -4327,8 +4327,29 @@ class Game:
                             help='Which ranked brain to use from --single-brain (0=highest fitness)')
         parser.add_argument('--profile', type=int, default=0, metavar='N',
                             help='Profile N frames with cProfile, print the hotspots, then exit')
+        parser.add_argument('--capture', type=int, default=0, metavar='N',
+                            help='Timelapse: save a PNG frame every N sim steps to dataSave/captures/{runID}/ (graphical modes only)')
+        parser.add_argument('--size', type=str, default=None, metavar='WxH',
+                            help='Window/world size in pixels for windowed or headless mode, e.g. 2000x2000 (default 1000x1000; ignored with --pi / --fullscreen)')
         args = parser.parse_args()
         self.profileFrames = max(0, args.profile)
+
+        # Timelapse capture state (--capture N)
+        self.captureEvery = max(0, args.capture)
+        self.captureDir = None      # created lazily once the runID exists
+        self.captureCount = 0       # sequential frame counter (ffmpeg-friendly)
+        self.nextCaptureStep = 0    # next totalSteps value to capture at
+
+        # Custom window/world size (--size WxH); Pi and fullscreen modes pick
+        # their own resolution, so it only applies to windowed/headless runs.
+        if args.size and not args.pi and not args.fullscreen:
+            try:
+                w, h = args.size.lower().split('x')
+                self.screenSize = (max(200, int(w)), max(200, int(h)))
+                self.renderSize = self.screenSize
+                print(f'World/window size set to {self.screenSize[0]}x{self.screenSize[1]}')
+            except ValueError:
+                print(f'Invalid --size "{args.size}" (expected WxH, e.g. 2000x2000) - using default {self.screenSize[0]}x{self.screenSize[1]}')
         self.fullscreenMode = False
         self.fullscreenMonitor = 0
         if args.fullscreen and not args.pi and not args.headless:
@@ -4680,6 +4701,18 @@ class Game:
                 elif self.renderSurface is not self.screen:
                     # Non-Pi mode with separate render surface (shouldn't happen normally)
                     self.screen.blit(self.renderSurface, (0, 0))
+
+            # Timelapse capture (--capture N): save a frame every N sim steps.
+            # Placed BEFORE the HUD/overlays are drawn so frames are clean
+            # world views, ready to assemble into a video.
+            if self.captureEvery > 0 and self.antColony.totalSteps >= self.nextCaptureStep:
+                if self.captureDir is None:
+                    self.captureDir = os.path.join('dataSave', 'captures', self.antColony.runID)
+                    os.makedirs(self.captureDir, exist_ok=True)
+                    print(f'[CAPTURE] Timelapse frames -> {self.captureDir} (every {self.captureEvery} steps)')
+                self.captureCount += 1
+                pygame.image.save(self.screen, os.path.join(self.captureDir, f'frame_{self.captureCount:06d}.png'))
+                self.nextCaptureStep = self.antColony.totalSteps + self.captureEvery
 
             # Draw HUD stats in top-left corner (not affected by scaling)
             if not self.drawPaths and not pi_brain_view:

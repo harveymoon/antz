@@ -1196,6 +1196,7 @@ class AntColony:
         
         # Timeline overlay system for fitness tracking
         self.fitnessHistory = []  # List of fitness snapshots over time (saved when saveData is called)
+        self.timelinePinned = False  # G key: keep the bottom fitness graph on (hover still works)
         
         # Hover info display tracking (click to show, auto-hide after timeout)
         self.hoverClickTime = 0  # Timestamp of last mouse click for hover
@@ -3534,7 +3535,7 @@ class AntColony:
                     screen.blit(text, (x_offset + 20, y_pos))
                     pygame.draw.rect(screen, antColor, (x_offset, y_pos, 10, 10))
         
-        if show_timeline:
+        if show_timeline or self.timelinePinned:
             self.drawTimelineOverlay(screen, isPi)
 
     def drawHive(self, screen, isPi=False):
@@ -4636,6 +4637,11 @@ class Game:
                     # V key - toggle path recording (SVG/PDF export for a plotter)
                     if event.key == pygame.K_v:
                         self.antColony.toggleRecording()
+                    # G key - pin the bottom fitness timeline graph on/off
+                    # (same graph the bottom-edge mouse hover shows)
+                    if event.key == pygame.K_g:
+                        self.antColony.timelinePinned = not self.antColony.timelinePinned
+                        print(f'Timeline graph: {"PINNED" if self.antColony.timelinePinned else "hover-only"}', flush=True)
 
             #run 5 times between each draw
             #not in pi mode

@@ -122,6 +122,8 @@ Or double-click `organize_best.bat` to keep top 1%.
 | `U` | Fast-forward 1000 simulation steps |
 | `C` | Cull bottom 50% of leaderboard |
 | `V` | Start/stop recording ant paths to SVG + PDF (for a pen/drawing machine) |
+| `G` | Pin the bottom fitness timeline graph on (same graph as the bottom-edge hover) |
+| `[` / `]` | Decrease / increase mutation rate by 5% |
 | `+` / `=` | Increase target FPS |
 | `-` | Decrease target FPS |
 | `X` | Shutdown Raspberry Pi (Pi mode only) |

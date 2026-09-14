@@ -1196,7 +1196,7 @@ class AntColony:
         
         # Timeline overlay system for fitness tracking
         self.fitnessHistory = []  # List of fitness snapshots over time (saved when saveData is called)
-        self.timelinePinned = False  # G key: keep the bottom fitness graph on (hover still works)
+        self.timelinePinned = False  # G key: toggle the bottom fitness graph (keypress only)
         self.leaderboardVisible = False  # B key: show the top-ants leaderboard (keypress only - the old
                                          # mouse-hover trigger fired accidentally and, in trail mode,
                                          # ghosted the popup into the canvas and timelapse captures)
@@ -3489,12 +3489,12 @@ class AntColony:
         if isPi:
             return
         
-        mouse_pos = pygame.mouse.get_pos()
         screen_height = screen.get_height()
-        # Leaderboard is keypress-only (B toggles) - no mouse-hover trigger, so
-        # stray mouse position can't stamp it into trail canvases / timelapses.
+        # Both overlays are keypress-only (B = leaderboard, G = timeline) - no
+        # screen-edge mouse triggers, so stray mouse position can't stamp them
+        # into trail canvases / timelapse captures.
         show_stats = self.leaderboardVisible
-        show_timeline = mouse_pos[1] >= screen_height - 20  # Show timeline if mouse is within 20px of bottom
+        show_timeline = self.timelinePinned
 
         if show_stats:
             dataShow = self.BestAnts
@@ -4663,11 +4663,10 @@ class Game:
                     # V key - toggle path recording (SVG/PDF export for a plotter)
                     if event.key == pygame.K_v:
                         self.antColony.toggleRecording()
-                    # G key - pin the bottom fitness timeline graph on/off
-                    # (same graph the bottom-edge mouse hover shows)
+                    # G key - toggle the bottom fitness timeline graph
                     if event.key == pygame.K_g:
                         self.antColony.timelinePinned = not self.antColony.timelinePinned
-                        print(f'Timeline graph: {"PINNED" if self.antColony.timelinePinned else "hover-only"}', flush=True)
+                        print(f'Timeline graph: {"ON" if self.antColony.timelinePinned else "OFF"}', flush=True)
                     # B key - toggle the top-ants leaderboard popup (keypress only,
                     # no mouse-hover trigger - it was ending up in timelapse frames)
                     if event.key == pygame.K_b:

@@ -148,7 +148,7 @@ Or double-click `organize_best.bat` to keep top 1%.
 | `U` | Fast-forward 1000 simulation steps |
 | `C` | Cull bottom 50% of leaderboard |
 | `V` | Start/stop recording ant paths to SVG + PDF (for a pen/drawing machine) |
-| `G` | Pin the bottom fitness timeline graph on (same graph as the bottom-edge hover) |
+| `G` | Toggle the bottom fitness timeline graph |
 | `B` | Toggle the top-ants leaderboard popup |
 | `[` / `]` | Decrease / increase mutation rate by 5% |
 | `+` / `=` | Increase target FPS |
@@ -160,7 +160,6 @@ Or double-click `organize_best.bat` to keep top 1%.
 | Action | Effect |
 |--------|--------|
 | **Right-click** | Add +5 food at mouse position |
-| **Hover bottom edge** | Show fitness timeline |
 | **Left-click** | Show cell info (food, pheromones, terrain) |
 
 ## Display

@@ -1197,6 +1197,9 @@ class AntColony:
         # Timeline overlay system for fitness tracking
         self.fitnessHistory = []  # List of fitness snapshots over time (saved when saveData is called)
         self.timelinePinned = False  # G key: keep the bottom fitness graph on (hover still works)
+        self.leaderboardVisible = False  # B key: show the top-ants leaderboard (keypress only - the old
+                                         # mouse-hover trigger fired accidentally and, in trail mode,
+                                         # ghosted the popup into the canvas and timelapse captures)
         
         # Hover info display tracking (click to show, auto-hide after timeout)
         self.hoverClickTime = 0  # Timestamp of last mouse click for hover
@@ -3488,7 +3491,9 @@ class AntColony:
         
         mouse_pos = pygame.mouse.get_pos()
         screen_height = screen.get_height()
-        show_stats = mouse_pos[1] <= 20  # Show stats if mouse is within 20px of top
+        # Leaderboard is keypress-only (B toggles) - no mouse-hover trigger, so
+        # stray mouse position can't stamp it into trail canvases / timelapses.
+        show_stats = self.leaderboardVisible
         show_timeline = mouse_pos[1] >= screen_height - 20  # Show timeline if mouse is within 20px of bottom
 
         if show_stats:
@@ -4663,6 +4668,11 @@ class Game:
                     if event.key == pygame.K_g:
                         self.antColony.timelinePinned = not self.antColony.timelinePinned
                         print(f'Timeline graph: {"PINNED" if self.antColony.timelinePinned else "hover-only"}', flush=True)
+                    # B key - toggle the top-ants leaderboard popup (keypress only,
+                    # no mouse-hover trigger - it was ending up in timelapse frames)
+                    if event.key == pygame.K_b:
+                        self.antColony.leaderboardVisible = not self.antColony.leaderboardVisible
+                        print(f'Leaderboard: {"ON" if self.antColony.leaderboardVisible else "OFF"}', flush=True)
 
             #run 5 times between each draw
             #not in pi mode

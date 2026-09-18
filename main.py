@@ -1197,6 +1197,8 @@ class AntColony:
         # Timeline overlay system for fitness tracking
         self.fitnessHistory = []  # List of fitness snapshots over time (saved when saveData is called)
         self.timelinePinned = False  # G key: toggle the bottom fitness graph (keypress only)
+        self.displayScale = 1.0  # render-px per window-px; >1 when the window is scaled down
+                                 # (multiply window mouse coords by this to get render coords)
         self.leaderboardVisible = False  # B key: show the top-ants leaderboard (keypress only - the old
                                          # mouse-hover trigger fired accidentally and, in trail mode,
                                          # ghosted the popup into the canvas and timelapse captures)
@@ -3413,6 +3415,9 @@ class AntColony:
         # Draw hover info for grid cell under mouse (not in Pi mode, click to show)
         if not isPi:
             mouse_pos = pygame.mouse.get_pos()
+            if self.displayScale != 1.0:
+                # Window is a scaled-down view: map mouse to render coordinates
+                mouse_pos = (mouse_pos[0] * self.displayScale, mouse_pos[1] * self.displayScale)
             mouse_pressed = pygame.mouse.get_pressed()[0]  # Left mouse button
             current_time = time.time()
             
@@ -4311,7 +4316,8 @@ class Game:
         # Pixel scaling for Pi mode - each logical pixel becomes NxN screen pixels
         # Set to 1 for normal resolution, 2 for half-res (4 pixels per logical pixel), etc.
         self.pixelScale = 1  # Default: no scaling
-        
+        self.downscaleDisplay = False  # Windowed: render full-res offscreen, show a smaller window
+
         self.screenSize = (1000, 1000)
         self.renderSize = (1000, 1000)  # Actual rendering resolution (may be smaller for scaled modes)
         #using argparse
@@ -4468,10 +4474,31 @@ class Game:
                 print(f'Render size: {self.renderSize} -> scaled to {self.screenSize}')
 
             else:
-                # os.environ["SDL_VIDEO_WINDOW_POS"] = "-1100,0"
-                self.screen = pygame.display.set_mode(self.screenSize)
+                # Windowed mode. If the requested world size doesn't fit on the
+                # desktop (e.g. --size 2000x2000 for a timelapse), render
+                # offscreen at FULL resolution and show a scaled-down window.
+                # Timelapse captures save the full-res render surface, so the
+                # display size never affects recording quality.
                 self.renderSize = self.screenSize
-                self.renderSurface = self.screen  # No scaling needed, render directly to screen
+                try:
+                    dw, dh = pygame.display.get_desktop_sizes()[0]
+                except Exception:
+                    info = pygame.display.Info()
+                    dw, dh = info.current_w, info.current_h
+                avail_w = int(dw * 0.92)   # leave room for taskbar / title bar
+                avail_h = int(dh * 0.88)
+                if self.renderSize[0] > avail_w or self.renderSize[1] > avail_h:
+                    fit = min(avail_w / self.renderSize[0], avail_h / self.renderSize[1])
+                    window = (max(200, int(self.renderSize[0] * fit)),
+                              max(200, int(self.renderSize[1] * fit)))
+                    self.screen = pygame.display.set_mode(window)
+                    self.renderSurface = pygame.Surface(self.renderSize)
+                    self.downscaleDisplay = True
+                    print(f'Window scaled down to {window[0]}x{window[1]} to fit the desktop '
+                          f'(render/capture resolution stays {self.renderSize[0]}x{self.renderSize[1]})')
+                else:
+                    self.screen = pygame.display.set_mode(self.screenSize)
+                    self.renderSurface = self.screen  # No scaling needed, render directly to screen
                 
                 
             self.clock = pygame.time.Clock()
@@ -4480,6 +4507,12 @@ class Game:
         print('Creating Ant Colony')
         # Use renderSize for the ant colony so the grid matches the render resolution
         self.antColony = AntColony(self.renderSize, self.maxAnts, tileSize, isPi=self.isPi)
+
+        # When the window is a scaled-down view of the full-res render surface,
+        # mouse coordinates arrive in window space - give the colony the factor
+        # to map them back to render space (used for clicks / hover cell info).
+        if self.downscaleDisplay:
+            self.antColony.displayScale = self.renderSize[0] / self.screen.get_width()
 
         # Pi-mode food/terrain tuning is applied inside AntColony.__init__ (before
         # the first terrain is generated); just report it here.
@@ -4605,6 +4638,10 @@ class Game:
                     # Right-click to add food at mouse position
                     if event.button == 3:  # Right mouse button
                         mouse_pos = pygame.mouse.get_pos()
+                        ds = self.antColony.displayScale
+                        if ds != 1.0:
+                            # Window is a scaled-down view: map to render coords
+                            mouse_pos = (mouse_pos[0] * ds, mouse_pos[1] * ds)
                         world_pos = self.antColony.ScreenToWorld(mouse_pos)
                         wx, wy = int(world_pos[0]), int(world_pos[1])
                         # Add food at this position (increment by 5)
@@ -4707,20 +4744,25 @@ class Game:
                     # Use NEAREST neighbor scaling to maintain sharp pixels (no blurring)
                     scaled_surface = pygame.transform.scale(self.renderSurface, self.screenSize)
                     self.screen.blit(scaled_surface, (0, 0))
+                elif self.downscaleDisplay:
+                    # Full-res offscreen render shown in a smaller window
+                    scaled_surface = pygame.transform.smoothscale(self.renderSurface, self.screen.get_size())
+                    self.screen.blit(scaled_surface, (0, 0))
                 elif self.renderSurface is not self.screen:
                     # Non-Pi mode with separate render surface (shouldn't happen normally)
                     self.screen.blit(self.renderSurface, (0, 0))
 
             # Timelapse capture (--capture N): save a frame every N sim steps.
-            # Placed BEFORE the HUD/overlays are drawn so frames are clean
-            # world views, ready to assemble into a video.
+            # Saves the RENDER surface (full resolution even when the window is
+            # scaled down) before the HUD/overlays are drawn on the display, so
+            # frames are clean world views ready to assemble into a video.
             if self.captureEvery > 0 and self.antColony.totalSteps >= self.nextCaptureStep:
                 if self.captureDir is None:
                     self.captureDir = os.path.join('dataSave', 'captures', self.antColony.runID)
                     os.makedirs(self.captureDir, exist_ok=True)
                     print(f'[CAPTURE] Timelapse frames -> {self.captureDir} (every {self.captureEvery} steps)')
                 self.captureCount += 1
-                pygame.image.save(self.screen, os.path.join(self.captureDir, f'frame_{self.captureCount:06d}.png'))
+                pygame.image.save(self.renderSurface, os.path.join(self.captureDir, f'frame_{self.captureCount:06d}.png'))
                 self.nextCaptureStep = self.antColony.totalSteps + self.captureEvery
 
             # Draw HUD stats in top-left corner (not affected by scaling)

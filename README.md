@@ -93,6 +93,10 @@ ffmpeg -framerate 30 -i frame_%06d.png -c:v libx264 -pix_fmt yuv420p timelapse.m
 At 2000x2000 the world is 250x250 tiles (~7.7x the default 1000x1000 / 125x125 world),
 so expect a slower step rate and plan the capture interval accordingly.
 
+If the requested `--size` doesn't fit on your monitor, the window automatically opens
+scaled down to fit - the simulation still renders (and captures) at the full requested
+resolution, and mouse clicks are mapped back to the right world cell.
+
 ## Parallel Training
 
 Run multiple instances simultaneously for faster evolution:

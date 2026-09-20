@@ -2661,6 +2661,9 @@ class AntColony:
                     if antFitness > self.BestAnts[existing_idx]["fitness"]:
                         self.BestAnts[existing_idx]["fitness"] = antFitness
                         self.BestAnts[existing_idx]["food"] = foodConsumed
+                    # If this was a live-champion entry, its owner just died -
+                    # it's a normal (final) entry from here on
+                    self.BestAnts[existing_idx].pop("live", None)
                 elif parent_idx is not None:
                     # Clone's parent exists - elevate parent's fitness if clone did better
                     if antFitness > self.BestAnts[parent_idx]["fitness"]:
@@ -2674,8 +2677,49 @@ class AntColony:
                 # Update top fitness for tracking purposes (not stagnation)
                 if antFitness > self.lastTopFitness:
                     self.lastTopFitness = antFitness
-        
-        
+
+        # === LIVE CHAMPION UPSERT ===
+        # Good ants live long (pickups/deliveries refill life), which used to
+        # lock their genes out of the breeding pool until they died - and let
+        # the stagnation clock run out underneath a thriving champion. Every
+        # 500 steps, living ants that have delivered and would make the board
+        # are upserted so descendants can start spawning immediately. When the
+        # ant later dies, the death path above finds the same brain key and
+        # finalizes the entry (death fitness includes the nav/exploration
+        # bonuses, so update-if-higher does the right thing).
+        if self.monoBrain is None and self.totalSteps % 500 == 0 and self.ants:
+            board = self.BestAnts
+            board_full = len(board) >= MAX_LEADERBOARD_SIZE
+            board_min = min(e["fitness"] for e in board) if board_full else 0
+            by_brain = {tuple(tuple(g) for g in e["brain"]): e for e in board}
+            live_activity = False
+            for ant in self.ants:
+                if ant.fitness_sources.get("deliver_base", 0) <= 0:
+                    continue  # must have completed at least one delivery
+                if board_full and ant.fitness <= board_min:
+                    continue  # wouldn't make the board
+                key = tuple(tuple(g) for g in ant.brain)
+                entry = by_brain.get(key)
+                if entry is not None:
+                    # Already on the board (live or ancestral) - refresh upward
+                    if ant.fitness > entry["fitness"]:
+                        entry["fitness"] = ant.fitness
+                        entry["food"] = ant.FoodConsumed
+                        live_activity = True
+                else:
+                    new_entry = {"food": ant.FoodConsumed, "brain": ant.brain,
+                                 "antID": ant.antID, "fitness": ant.fitness,
+                                 "live": True}
+                    board.append(new_entry)
+                    by_brain[key] = new_entry
+                    live_activity = True
+                    print(f'[LIVE CHAMPION] Ant {ant.antID[0]} joined the leaderboard while alive '
+                          f'(fitness {int(ant.fitness)}, food {ant.FoodConsumed})')
+            if live_activity:
+                # A living ant still gaining fitness IS progress - don't let
+                # stagnation cull/reset a world with a thriving champion in it.
+                self.lastLeaderboardChangeStep = self.totalSteps
+
         #remove old pheromone cells and decay both types
         # Batch pheromone decay every 5 frames for performance.
         # 0.02/5steps = 0.004/step. Evaporation must stay brisk: food depletes
@@ -3530,7 +3574,8 @@ class AntColony:
                     y_pos = 10 + row * row_height
                     
                     cloneParent = ant["antID"][2] if ant["antID"][2] != -1 else ''
-                    textV = f'Food:{int(ant["food"]):03} Fit:{int(ant["fitness"]):03} ID:{ant["antID"][0]:06},{ant["antID"][1]},{cloneParent}'
+                    liveMark = '*' if ant.get("live") else ''
+                    textV = f'{liveMark}Food:{int(ant["food"]):03} Fit:{int(ant["fitness"]):03} ID:{ant["antID"][0]:06},{ant["antID"][1]},{cloneParent}'
                     textV = textV[:55]
                     
                     antColor = BrainToColor(ant["brain"])

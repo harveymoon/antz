@@ -99,6 +99,7 @@ class Ant:
         
         self.FarthestTraveled = 0 # the farthest the ant has traveled from the hive give a fitness bonus when dead
         self._move_budget = 1.0  # per-frame movement budget, reset each RunBrain
+        self.epochFoodBase = 0   # FoodConsumed snapshot at the last world reset (epoch curriculum)
         
         # Track previous cell position to only drop pheromones when moving to new cell
         self.prevCellX = -1
@@ -1039,16 +1040,22 @@ class AntColony:
         # so food can be placed closer - see the Pi setup in Game.__init__.
         self.minFoodHiveDist = 25
 
-        # Bootstrap curriculum: until the colony's top ant has completed
-        # bootstrapFoodTarget pickups, food may spawn as close as
-        # bootstrapFoodDist tiles from the nest. A random-walking ant covers
-        # ~14 tiles in its 200-step base life, so the normal 25-tile distance
-        # is unreachable for a cold-start population - fitness stays zero and
-        # there is nothing for selection to work on. Close food gives the
-        # first generations a climbable gradient; once foraging demonstrably
-        # works (top ant >= target), the normal distance applies.
+        # Bootstrap curriculum, PER EPOCH: until some ant has completed
+        # bootstrapFoodTarget pickups since the current world began, food may
+        # spawn as close as bootstrapFoodDist tiles from the nest. A random
+        # walker covers ~14 tiles in its 200-step base life, so the normal
+        # 25-tile distance is unreachable without help - fitness stays zero
+        # and there is nothing for selection to work on. Close food gives a
+        # climbable gradient; once foraging is proven IN THIS WORLD, the
+        # normal distance applies. The counter resets on every world reset,
+        # so each "natural disaster" is a survivable re-bootstrap exam:
+        # lineages that recover fastest across many worlds are the
+        # generalists. (epochTopFood is measured as FoodConsumed deltas since
+        # the epoch began, so ants that survive a reset are graded only on
+        # what they gather in the new world.)
         self.bootstrapFoodDist = 7
         self.bootstrapFoodTarget = 5
+        self.epochTopFood = 0
 
         # Terrain thinning around the nest. Within hiveClearRadius the ground is
         # left as open air; between hiveClearRadius and hiveSoftRadius the terrain
@@ -1386,10 +1393,11 @@ class AntColony:
             self.foodSpatialIndex.add(foodX, foodY)
  
     def effectiveMinFoodDist(self):
-        """Current minimum food-to-nest distance, honoring the bootstrap
-        curriculum: close food until the top ant reaches bootstrapFoodTarget
-        pickups, the normal minFoodHiveDist afterwards."""
-        if self.topFoodFound < self.bootstrapFoodTarget:
+        """Current minimum food-to-nest distance, honoring the per-epoch
+        bootstrap curriculum: close food until some ant reaches
+        bootstrapFoodTarget pickups in the CURRENT world (epoch), the normal
+        minFoodHiveDist afterwards. World resets re-engage the curriculum."""
+        if self.epochTopFood < self.bootstrapFoodTarget:
             return min(self.minFoodHiveDist, self.bootstrapFoodDist)
         return self.minFoodHiveDist
 
@@ -1618,12 +1626,15 @@ class AntColony:
         # Snapshot the diggable dirt so we can detect when ants have dug too much
         self.initialDirt = self._sumDirt()
 
-    def reset_world(self, move_nest=False):
+    def reset_world(self, move_nest=False, reason="manual"):
         """Reset the world: regenerate terrain, clear pheromones, reset ants.
         The nest is relocated only when move_nest=True (stagnation resets) -
         erosion/manual resets keep it put so the colony's spatial knowledge
-        and any evolving foraging equilibrium aren't destroyed with it."""
-        print("[WORLD RESET] Regenerating terrain...")
+        and any evolving foraging equilibrium aren't destroyed with it.
+        Each reset starts a new epoch: the bootstrap curriculum re-engages
+        (food close until foraging is re-proven) and the reset is logged to
+        dataSave/deaths/{runID}.resets.jsonl for lineage/recovery analysis."""
+        print(f"[WORLD RESET] ({reason}) Regenerating terrain...")
 
         if move_nest:
             # Move the nest to a fresh random location. Done BEFORE terrain/wall
@@ -1667,6 +1678,27 @@ class AntColony:
             # canvas from its old position to the hive.
             if ant.recorded:
                 self._finalizeRecordPath(ant, alive_after=True)
+
+        # New epoch: re-engage the bootstrap curriculum. Snapshot every
+        # surviving ant's food count so epoch performance is measured only on
+        # what it gathers in the NEW world, then bring food back in close
+        # until foraging is re-proven here.
+        self.epochTopFood = 0
+        for ant in self.ants:
+            ant.epochFoodBase = ant.FoodConsumed
+        print(f"  • Curriculum re-engaged: food from {self.effectiveMinFoodDist()} tiles "
+              f"until an ant gathers {self.bootstrapFoodTarget} this epoch")
+
+        # Log the reset so analysis can align lineages/foraging windows with
+        # world changes instead of inferring them.
+        try:
+            resets_path = os.path.join('dataSave', 'deaths', f'{self.runID}.resets.jsonl')
+            with open(resets_path, 'a') as rf:
+                rf.write(json.dumps({"step": self.totalSteps, "reason": reason,
+                                     "move_nest": move_nest,
+                                     "hivePos": list(self.hivePos)}) + "\n")
+        except Exception as e:
+            print(f"  • Could not write reset log: {e}")
 
         # Update reset tracking. Reset stagnation timer too: a fresh world is a
         # fresh starting point, so the no-improvement clock should not carry over.
@@ -2238,7 +2270,7 @@ class AntColony:
         # (see Repopulate) so this only escalates within an unbroken slump.
         if self.stagnationCount >= 2:
             print("  • Second consecutive stagnation - resetting the world")
-            self.reset_world(move_nest=True)
+            self.reset_world(move_nest=True, reason="stagnation")
             self.stagnationCount = 0
 
 
@@ -2460,12 +2492,18 @@ class AntColony:
                             # print(f'ant consumed food, food consumed: {ant.FoodConsumed}')
                             if ant.FoodConsumed > self.topFoodFound:
                                 print(f'New top ant!!: {ant.FoodConsumed}')
-                                prev_top = self.topFoodFound
                                 self.topFoodFound = ant.FoodConsumed
-                                # Bootstrap curriculum graduation: foraging is
-                                # proven, food moves out to the normal distance
-                                if prev_top < self.bootstrapFoodTarget <= self.topFoodFound:
-                                    print(f'[CURRICULUM] Top ant reached {self.bootstrapFoodTarget} food - '
+
+                            # Per-epoch curriculum: grade the ant only on food
+                            # gathered since the current world began
+                            epoch_food = ant.FoodConsumed - ant.epochFoodBase
+                            if epoch_food > self.epochTopFood:
+                                prev_epoch_top = self.epochTopFood
+                                self.epochTopFood = epoch_food
+                                # Curriculum graduation: foraging is proven in
+                                # THIS world - food moves out to normal distance
+                                if prev_epoch_top < self.bootstrapFoodTarget <= epoch_food:
+                                    print(f'[CURRICULUM] Top ant reached {self.bootstrapFoodTarget} food this epoch - '
                                           f'min food distance now {self.minFoodHiveDist} tiles '
                                           f'(was {min(self.minFoodHiveDist, self.bootstrapFoodDist)})')
                             
@@ -2828,7 +2866,7 @@ class AntColony:
         if self.worldResetInterval > 0:
             steps_since_reset = self.totalSteps - self.lastWorldReset
             if steps_since_reset >= self.worldResetInterval:
-                self.reset_world()
+                self.reset_world(reason="interval")
 
         # Reset the world if more than half of the initial walls have eroded away.
         # Checked every 500 steps so the scan cost is negligible.
@@ -2836,7 +2874,7 @@ class AntColony:
             current_walls = self._countWalls()
             if current_walls < self.initialWallCount * 0.5:
                 print(f"[WALL EROSION] Walls dropped to {current_walls}/{self.initialWallCount} (<50%) - resetting world")
-                self.reset_world()
+                self.reset_world(reason="wall_erosion")
 
         # Reset the world once the ants have dug away enough of the dirt
         # (remaining diggable soil below dirtResetRemainingFrac of the start:
@@ -2847,7 +2885,7 @@ class AntColony:
                 pct_gone = 100 * (1 - current_dirt / self.initialDirt)
                 print(f"[DIRT EROSION] {pct_gone:.0f}% of dirt dug away "
                       f"(<{100*self.dirtResetRemainingFrac:.0f}% remains) - resetting world")
-                self.reset_world()
+                self.reset_world(reason="dirt_erosion")
 
         if self.totalSteps % 1000 == 0:
             print("------------------report-----------------")

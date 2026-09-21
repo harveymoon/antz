@@ -1056,6 +1056,7 @@ class AntColony:
         self.bootstrapFoodDist = 7
         self.bootstrapFoodTarget = 5
         self.epochTopFood = 0
+        self._curriculumDistShown = 0  # last announced walk-out distance
 
         # Terrain thinning around the nest. Within hiveClearRadius the ground is
         # left as open air; between hiveClearRadius and hiveSoftRadius the terrain
@@ -1394,12 +1395,16 @@ class AntColony:
  
     def effectiveMinFoodDist(self):
         """Current minimum food-to-nest distance, honoring the per-epoch
-        bootstrap curriculum: close food until some ant reaches
-        bootstrapFoodTarget pickups in the CURRENT world (epoch), the normal
-        minFoodHiveDist afterwards. World resets re-engage the curriculum."""
+        bootstrap curriculum. Food starts close (bootstrapFoodDist) and walks
+        OUT gradually - +2 tiles for each food the epoch's top ant gathers
+        beyond the target - capped at the normal minFoodHiveDist. The jump
+        version (7 straight to 25 on graduation) collapsed a bootstrapped
+        colony overnight: challenge must grow with proven competence, not
+        ahead of it. World resets re-engage the curriculum from the start."""
         if self.epochTopFood < self.bootstrapFoodTarget:
             return min(self.minFoodHiveDist, self.bootstrapFoodDist)
-        return self.minFoodHiveDist
+        walked = self.bootstrapFoodDist + (self.epochTopFood - self.bootstrapFoodTarget + 1) * 2
+        return min(self.minFoodHiveDist, walked)
 
     def set_terrain(self, x, y, density):
         """Set terrain density at a position (0 to maxTerrainDensity scale)"""
@@ -1684,6 +1689,7 @@ class AntColony:
         # what it gathers in the NEW world, then bring food back in close
         # until foraging is re-proven here.
         self.epochTopFood = 0
+        self._curriculumDistShown = 0
         for ant in self.ants:
             ant.epochFoodBase = ant.FoodConsumed
         print(f"  • Curriculum re-engaged: food from {self.effectiveMinFoodDist()} tiles "
@@ -2498,14 +2504,14 @@ class AntColony:
                             # gathered since the current world began
                             epoch_food = ant.FoodConsumed - ant.epochFoodBase
                             if epoch_food > self.epochTopFood:
-                                prev_epoch_top = self.epochTopFood
                                 self.epochTopFood = epoch_food
-                                # Curriculum graduation: foraging is proven in
-                                # THIS world - food moves out to normal distance
-                                if prev_epoch_top < self.bootstrapFoodTarget <= epoch_food:
-                                    print(f'[CURRICULUM] Top ant reached {self.bootstrapFoodTarget} food this epoch - '
-                                          f'min food distance now {self.minFoodHiveDist} tiles '
-                                          f'(was {min(self.minFoodHiveDist, self.bootstrapFoodDist)})')
+                                # Announce each curriculum walk-out step
+                                d = self.effectiveMinFoodDist()
+                                if d != self._curriculumDistShown:
+                                    self._curriculumDistShown = d
+                                    print(f'[CURRICULUM] Epoch top {epoch_food} food - '
+                                          f'min food distance walks out to {d} tiles '
+                                          f'(full difficulty at {self.minFoodHiveDist})')
                             
             # if self.foodGrid.GetVal(int(ant.x), int(ant.y)) == 1: #ANT ON FOOD
             #     ant.energy += 10

@@ -1039,6 +1039,17 @@ class AntColony:
         # so food can be placed closer - see the Pi setup in Game.__init__.
         self.minFoodHiveDist = 25
 
+        # Bootstrap curriculum: until the colony's top ant has completed
+        # bootstrapFoodTarget pickups, food may spawn as close as
+        # bootstrapFoodDist tiles from the nest. A random-walking ant covers
+        # ~14 tiles in its 200-step base life, so the normal 25-tile distance
+        # is unreachable for a cold-start population - fitness stays zero and
+        # there is nothing for selection to work on. Close food gives the
+        # first generations a climbable gradient; once foraging demonstrably
+        # works (top ant >= target), the normal distance applies.
+        self.bootstrapFoodDist = 7
+        self.bootstrapFoodTarget = 5
+
         # Terrain thinning around the nest. Within hiveClearRadius the ground is
         # left as open air; between hiveClearRadius and hiveSoftRadius the terrain
         # density is scaled up linearly from 0 to full, so the nest is never
@@ -1052,6 +1063,14 @@ class AntColony:
         # coverage. Defaults preserve the desktop look.
         self.terrainPatchFrequency = 0.1
         self.terrainEmptyBias = 0.3
+
+        # Dirt-erosion world reset: fires when remaining diggable dirt drops
+        # below this fraction of the starting amount. Desktop uses a much
+        # harder threshold (6% remaining = 94% dug) - at desktop ant counts the
+        # old 60% threshold reset the world (and its pheromone trail network)
+        # every ~18k steps, which kept cold-start colonies from ever
+        # establishing foraging. Pi keeps the original 60%.
+        self.dirtResetRemainingFrac = 0.06
 
         # Pi mode: smaller screen, so let food spawn closer to the hive and keep a
         # wider, thinned ring of soft soil around the nest (never heavy soil).
@@ -1067,6 +1086,8 @@ class AntColony:
             # more empty so open corridors run between them.
             self.terrainPatchFrequency = 0.3
             self.terrainEmptyBias = 0.45
+            # Pi worlds are tiny and dig out fast - keep the original reset point
+            self.dirtResetRemainingFrac = 0.6
             # Keep a lot more food on the field so the small Pi world looks busy
             # (both the cap and the 50% replenish floor scale from maxFood).
             # Raised again by request; food stacks per cell so the cap can exceed
@@ -1348,9 +1369,10 @@ class AntColony:
         if terrain_density not in (0, False, None) and terrain_density > self.maxTerrainDensity / 3:
             return  # Too dense, no food here
         
-        # Don't place food near the hive
+        # Don't place food near the hive (curriculum-aware: this used to be a
+        # hardcoded 15-tile floor that silently overrode closer settings)
         distToHive = math.hypot(foodX - self.hivePos[0], foodY - self.hivePos[1])
-        if distToHive < 15:
+        if distToHive < self.effectiveMinFoodDist():
             return
 
         # Check if this is a new food location (not already in grid)
@@ -1363,6 +1385,14 @@ class AntColony:
         if was_empty:
             self.foodSpatialIndex.add(foodX, foodY)
  
+    def effectiveMinFoodDist(self):
+        """Current minimum food-to-nest distance, honoring the bootstrap
+        curriculum: close food until the top ant reaches bootstrapFoodTarget
+        pickups, the normal minFoodHiveDist afterwards."""
+        if self.topFoodFound < self.bootstrapFoodTarget:
+            return min(self.minFoodHiveDist, self.bootstrapFoodDist)
+        return self.minFoodHiveDist
+
     def set_terrain(self, x, y, density):
         """Set terrain density at a position (0 to maxTerrainDensity scale)"""
         if 0 <= x < self.width and 0 <= y < self.height:
@@ -1588,15 +1618,19 @@ class AntColony:
         # Snapshot the diggable dirt so we can detect when ants have dug too much
         self.initialDirt = self._sumDirt()
 
-    def reset_world(self):
-        """Reset the world: move the hive to a new spot, regenerate terrain, clear pheromones, reset ants"""
+    def reset_world(self, move_nest=False):
+        """Reset the world: regenerate terrain, clear pheromones, reset ants.
+        The nest is relocated only when move_nest=True (stagnation resets) -
+        erosion/manual resets keep it put so the colony's spatial knowledge
+        and any evolving foraging equilibrium aren't destroyed with it."""
         print("[WORLD RESET] Regenerating terrain...")
 
-        # Move the nest to a fresh random location. Done BEFORE terrain/wall
-        # generation so the cleared area (hive_clear_radius) forms around the
-        # NEW hive, and before the ants below are teleported onto it.
-        self.hivePos = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
-        print(f"  • Nest moved to {self.hivePos}")
+        if move_nest:
+            # Move the nest to a fresh random location. Done BEFORE terrain/wall
+            # generation so the cleared area (hive_clear_radius) forms around the
+            # NEW hive, and before the ants below are teleported onto it.
+            self.hivePos = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+            print(f"  • Nest moved to {self.hivePos}")
 
         # Clear all grids
         self.terrainGrid.Clear()
@@ -2020,7 +2054,7 @@ class AntColony:
                     continue
                 distToHive = math.hypot(foodPosRand[0] - self.hivePos[0], foodPosRand[1] - self.hivePos[1])
 
-                if distToHive > self.minFoodHiveDist:
+                if distToHive > self.effectiveMinFoodDist():
                     # Only place food on low-density terrain (density <= half max)
                     terrain_density = self.terrainGrid.GetVal(foodPosRand[0], foodPosRand[1])
                     
@@ -2204,7 +2238,7 @@ class AntColony:
         # (see Repopulate) so this only escalates within an unbroken slump.
         if self.stagnationCount >= 2:
             print("  • Second consecutive stagnation - resetting the world")
-            self.reset_world()
+            self.reset_world(move_nest=True)
             self.stagnationCount = 0
 
 
@@ -2426,7 +2460,14 @@ class AntColony:
                             # print(f'ant consumed food, food consumed: {ant.FoodConsumed}')
                             if ant.FoodConsumed > self.topFoodFound:
                                 print(f'New top ant!!: {ant.FoodConsumed}')
+                                prev_top = self.topFoodFound
                                 self.topFoodFound = ant.FoodConsumed
+                                # Bootstrap curriculum graduation: foraging is
+                                # proven, food moves out to the normal distance
+                                if prev_top < self.bootstrapFoodTarget <= self.topFoodFound:
+                                    print(f'[CURRICULUM] Top ant reached {self.bootstrapFoodTarget} food - '
+                                          f'min food distance now {self.minFoodHiveDist} tiles '
+                                          f'(was {min(self.minFoodHiveDist, self.bootstrapFoodDist)})')
                             
             # if self.foodGrid.GetVal(int(ant.x), int(ant.y)) == 1: #ANT ON FOOD
             #     ant.energy += 10
@@ -2566,11 +2607,15 @@ class AntColony:
             foodConsumed = ant.FoodConsumed  # This is actually "completed trips"
             antFitness = ant.fitness
 
-            # Exploration bonus: reward ants that ventured far (but cap it)
-            # Only if they completed at least one trip
-            exploration_bonus = 0
-            if foodConsumed > 0:
-                exploration_bonus = min(50, int(ant.FarthestTraveled * 0.5))
+            # Exploration bonus: reward ants that ventured far (capped WELL
+            # below a single pickup (50) and delivery (500+), so foraging
+            # always dominates). Awarded to EVERY ant, not just deliverers -
+            # in a cold start 99.9% of ants die with zero fitness otherwise,
+            # leaving selection nothing to work on. This gives the bottom of
+            # the population a gradient: farther explorers out-breed loiterers
+            # until real foragers appear and take over the board.
+            exploration_bonus = min(30, int(ant.FarthestTraveled * 0.3))
+            if exploration_bonus > 0:
                 antFitness += exploration_bonus
                 # Record on the ant's breakdown too so the death log captures it.
                 ant.fitness_sources["death_exploration"] = (
@@ -2638,7 +2683,17 @@ class AntColony:
             # good brains, so averaging in failed clone lives suppressed the
             # very lineages that delivered before cloning could amplify them.
             # (An averaging variant was tried 2026-06-11 and reverted.)
-            if foodConsumed >= 1:
+            #
+            # Admission: any positive fitness qualifies (exploration counts),
+            # not just completed trips - during a cold start the board fills
+            # with the best explorers so the breeding pool has a gradient to
+            # climb; real foragers (500+ per delivery) displace them the
+            # moment they exist. Cheap pre-check keeps the O(board) brain
+            # dedup scan away from the flood of below-minimum deaths.
+            board_min = (self.BestAnts[-1]["fitness"]
+                         if len(self.BestAnts) >= MAX_LEADERBOARD_SIZE else 0)
+            if antFitness > 0 and (len(self.BestAnts) < MAX_LEADERBOARD_SIZE
+                                   or antFitness > board_min):
                 # Check if this brain already exists in BestAnts
                 brain_key = tuple(tuple(gene) for gene in antBrain)
                 existing_idx = None
@@ -2783,14 +2838,15 @@ class AntColony:
                 print(f"[WALL EROSION] Walls dropped to {current_walls}/{self.initialWallCount} (<50%) - resetting world")
                 self.reset_world()
 
-        # Reset the world once the ants have dug away more than 40% of the dirt
-        # (i.e. remaining diggable soil drops below 60% of the starting amount).
-        # Same 500-step cadence so the full-grid scan stays cheap.
+        # Reset the world once the ants have dug away enough of the dirt
+        # (remaining diggable soil below dirtResetRemainingFrac of the start:
+        # 6% on desktop, 60% on Pi). Same 500-step cadence, cheap scan.
         elif self.totalSteps % 500 == 0 and self.initialDirt > 0:
             current_dirt = self._sumDirt()
-            if current_dirt < self.initialDirt * 0.6:
+            if current_dirt < self.initialDirt * self.dirtResetRemainingFrac:
                 pct_gone = 100 * (1 - current_dirt / self.initialDirt)
-                print(f"[DIRT EROSION] {pct_gone:.0f}% of dirt dug away (<60% remains) - resetting world")
+                print(f"[DIRT EROSION] {pct_gone:.0f}% of dirt dug away "
+                      f"(<{100*self.dirtResetRemainingFrac:.0f}% remains) - resetting world")
                 self.reset_world()
 
         if self.totalSteps % 1000 == 0:

@@ -1057,6 +1057,14 @@ class AntColony:
         self.bootstrapFoodTarget = 5
         self.epochTopFood = 0
         self._curriculumDistShown = 0  # last announced walk-out distance
+        # Curriculum thermostat: colony-wide delivery silence walks the ladder
+        # back down (1 epochTopFood per 1500 steps after 3000 silent steps).
+        # Without it the walk-out is a one-way ratchet: run 8cafddef boomed,
+        # ratcheted food out to full distance, collapsed, and the bootstrap
+        # clusters - placed at the ratcheted distance - stayed unreachable
+        # for cold ants forever.
+        self.lastDeliveryStep = 0
+        self._lastCurriculumDecay = 0
 
         # Terrain thinning around the nest. Within hiveClearRadius the ground is
         # left as open air; between hiveClearRadius and hiveSoftRadius the terrain
@@ -1730,6 +1738,8 @@ class AntColony:
         # until foraging is re-proven here.
         self.epochTopFood = 0
         self._curriculumDistShown = 0
+        self.lastDeliveryStep = self.totalSteps      # fresh epoch gets a grace period
+        self._lastCurriculumDecay = self.totalSteps
         for ant in self.ants:
             ant.epochFoodBase = ant.FoodConsumed
         print(f"  • Curriculum re-engaged: food from {self.effectiveMinFoodDist()} tiles "
@@ -2431,7 +2441,8 @@ class AntColony:
                 if ant.carryingFood:
                     ant.carryingFood = False
                     ant.life += 150  # Reward: keep ant alive to forage again
-                    
+                    self.lastDeliveryStep = self.totalSteps  # curriculum thermostat signal
+
                     # === TRIP COMPLETION REWARD ===
                     # Base reward for completing the round trip. This is the winning
                     # strategy and must clearly out-pay any per-step trail bonus.
@@ -2902,6 +2913,20 @@ class AntColony:
         # (checked cheaply every 200 steps via the spatial index)
         if self.totalSteps % 200 == 0:
             self._ensureNearFood()
+
+        # Curriculum thermostat: if nobody has delivered for 3000+ steps, step
+        # the ladder back down (one rung per 1500 steps of continued silence),
+        # so a collapsed economy always gets a reachable on-ramp back.
+        if (self.epochTopFood > 0 and self.totalSteps % 500 == 0
+                and self.totalSteps - self.lastDeliveryStep > 3000
+                and self.totalSteps - self._lastCurriculumDecay > 1500):
+            self.epochTopFood -= 1
+            self._lastCurriculumDecay = self.totalSteps
+            d = self.effectiveMinFoodDist()
+            if d != self._curriculumDistShown:
+                self._curriculumDistShown = d
+                print(f'[CURRICULUM] No deliveries for 3000+ steps - ladder steps back '
+                      f'to {d} tiles (epoch top now {self.epochTopFood})')
 
         repop_result = self.Repopulate()
         endTime = time.time()

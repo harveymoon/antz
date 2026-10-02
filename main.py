@@ -1061,10 +1061,11 @@ class AntColony:
         # Terrain thinning around the nest. Within hiveClearRadius the ground is
         # left as open air; between hiveClearRadius and hiveSoftRadius the terrain
         # density is scaled up linearly from 0 to full, so the nest is never
-        # surrounded by heavy soil. Default keeps the old behavior (no soft ring);
-        # Pi mode widens both.
+        # surrounded by heavy soil. Desktop uses a modest ring too: a terrain
+        # roll that sealed the nest in max-density slabs permanently killed a
+        # proven-viable monoculture colony (run 9d260af8). Pi widens both.
         self.hiveClearRadius = 5
-        self.hiveSoftRadius = 5
+        self.hiveSoftRadius = 12
 
         # Terrain noise shape (see _generate_terrain). Higher frequency =
         # smaller, more turbulent dirt islands; higher empty bias = sparser
@@ -1114,7 +1115,7 @@ class AntColony:
         print(f'Field size: {self.width}x{self.height} = {self.fieldArea} tiles, scale factor: {self.fieldScaleFactor:.2f}, maxFood: {self.maxFood}, searchRadius: {self.foodSearchRadius}')
 
         # self.hivePos = [int(GridSize[0]*0.5), int(GridSize[1]*0.5)]
-        self.hivePos = [random.randint(0, self.width-1), random.randint(0, self.height-1)]
+        self.hivePos = self._randomHivePos()
         #the upper right corner is the tricky spot to lets put it there
         # self.hivePos = [int(GridSize[0]*0.1), int(GridSize[1]*0.1)]
         
@@ -1393,6 +1394,45 @@ class AntColony:
         if was_empty:
             self.foodSpatialIndex.add(foodX, foodY)
  
+    def _ensureNearFood(self):
+        """Guarantee the curriculum ladder always has a rung: if no food exists
+        within effectiveMinFoodDist()+8 tiles of the nest, deliberately place a
+        small cluster in that ring. Random quadrant placement lands near the
+        nest only ~4% of the time, so close food was a transient accident of
+        the initial field fill - run f05fe66d starved at a 7-tile floor with
+        no 7-tile food, and run 9d260af8 never recovered from a reset for the
+        same reason. A floor is not a supply; this is the supply."""
+        hx, hy = int(self.hivePos[0]), int(self.hivePos[1])
+        minD = self.effectiveMinFoodDist()
+        if self.foodSpatialIndex.find_any_in_range(hx, hy, minD + 8) != [-1, -1]:
+            return
+        # Try several angles; add_food itself enforces min distance, bounds,
+        # and refuses dense terrain/walls, so bad spots just place fewer cells.
+        for _ in range(8):
+            ang = random.random() * TWO_PI
+            r = minD + 1 + random.random() * 6
+            cx = int(hx + math.cos(ang) * r)
+            cy = int(hy + math.sin(ang) * r)
+            placed = 0
+            for _ in range(30):
+                before = self.foodGrid.sumValues()
+                self.add_food([cx + random.randint(-2, 2), cy + random.randint(-2, 2)],
+                              amount=random.randint(2, 4))
+                if self.foodGrid.sumValues() > before:
+                    placed += 1
+            if placed >= 5:
+                print(f'[CURRICULUM] Bootstrap cluster placed ~{int(r)} tiles from nest ({placed} cells)')
+                return
+
+    def _randomHivePos(self):
+        """Random nest position keeping a margin from the map edges, so the
+        ring where close (curriculum) food can spawn is never half off-map
+        and the nest can't sit against the perimeter wall. Margin adapts to
+        small fields (Pi)."""
+        margin = min(15, self.width // 4, self.height // 4)
+        return [random.randint(margin, self.width - 1 - margin),
+                random.randint(margin, self.height - 1 - margin)]
+
     def effectiveMinFoodDist(self):
         """Current minimum food-to-nest distance, honoring the per-epoch
         bootstrap curriculum. Food starts close (bootstrapFoodDist) and walks
@@ -1642,10 +1682,10 @@ class AntColony:
         print(f"[WORLD RESET] ({reason}) Regenerating terrain...")
 
         if move_nest:
-            # Move the nest to a fresh random location. Done BEFORE terrain/wall
-            # generation so the cleared area (hive_clear_radius) forms around the
-            # NEW hive, and before the ants below are teleported onto it.
-            self.hivePos = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+            # Move the nest to a fresh random location (kept off map edges).
+            # Done BEFORE terrain/wall generation so the cleared area forms
+            # around the NEW hive, and before the ants are teleported onto it.
+            self.hivePos = self._randomHivePos()
             print(f"  • Nest moved to {self.hivePos}")
 
         # Clear all grids
@@ -2857,6 +2897,11 @@ class AntColony:
             for q in range(4):
                 self.ReplenishFood(q, baseCluster)
             # print('food replenished')
+
+        # Curriculum supply guarantee: keep a reachable cluster near the nest
+        # (checked cheaply every 200 steps via the spatial index)
+        if self.totalSteps % 200 == 0:
+            self._ensureNearFood()
 
         repop_result = self.Repopulate()
         endTime = time.time()

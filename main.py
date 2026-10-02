@@ -1326,6 +1326,12 @@ class AntColony:
             ant.x += random.random() * 3
             ant.y = startP[1]
             ant.y += random.random() * 3
+        # Random initial heading. Every ant used to be born facing due east
+        # (direction 0), so identical brains probed the same corridor over and
+        # over - 60% of a monoculture died at the same 35-39 tile dead end
+        # while the rest of the field went unsearched. 360 degrees of spawn
+        # headings turns the same genome into disk coverage instead of a ray.
+        ant.direction = random.random() * TWO_PI
         
         
         

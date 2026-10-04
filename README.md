@@ -181,6 +181,25 @@ Saved data is stored in the `dataSave/` folder:
 - **dataSave/deaths/**: Per-death JSONL log, one file per Run ID
 - Each `BestAnts` JSON contains top 200 ant brains with fitness scores
 
+## Sim history viewer (web)
+
+```bash
+python viewer.py        # index new data, serve http://localhost:8008
+python viewer.py --index  # just refresh the caches and exit
+```
+
+A dependency-free local web app for browsing current and past runs: run list
+(live runs badged), summary cards, delivery/pickup/lifespan/board-fitness
+charts with world-reset markers, the run manifest, and a timeline scrubber
+synced to the run's timelapse video (or raw capture frames).
+
+Death logs are distilled once into small caches (`dataSave/viewer_cache/`) -
+a multi-GB log becomes ~100 KB of binned series, updated incrementally while
+a run is live. **Once cached, raw death logs can be deleted to reclaim disk**;
+the viewer keeps working from the cache. Every run also writes a manifest
+(`dataSave/{runID}.manifest.json`) recording its flags, world size, capture
+interval and code commit.
+
 ## Observability: per-death log + analyzer
 
 Every ant death appends one JSON line to `dataSave/deaths/{runID}.jsonl`. Each line includes:

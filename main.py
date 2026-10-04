@@ -4735,6 +4735,37 @@ class Game:
         if self.downscaleDisplay:
             self.antColony.displayScale = self.renderSize[0] / self.screen.get_width()
 
+        # Run manifest: record this run's context (flags, world size, capture
+        # interval, code commit) so the history viewer and analyzers never
+        # have to infer it from the data afterwards.
+        try:
+            import subprocess
+            try:
+                commit = subprocess.check_output(
+                    ['git', 'rev-parse', '--short', 'HEAD'],
+                    stderr=subprocess.DEVNULL, timeout=5).decode().strip()
+            except Exception:
+                commit = None
+            manifest = {
+                "runID": self.antColony.runID,
+                "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "argv": sys.argv[1:],
+                "commit": commit,
+                "worldTiles": [self.antColony.width, self.antColony.height],
+                "renderSize": list(self.renderSize),
+                "tileSize": self.antColony.TileSize,
+                "maxFood": self.antColony.maxFood,
+                "maxAnts": self.maxAnts,
+                "isPi": self.isPi,
+                "headless": self.headlessMode,
+                "captureEvery": self.captureEvery,
+                "singleBrain": args.single_brain,
+            }
+            with open(os.path.join('dataSave', f'{self.antColony.runID}.manifest.json'), 'w') as mf:
+                json.dump(manifest, mf, indent=1)
+        except Exception as e:
+            print(f"[MANIFEST] write failed: {e}")
+
         # Pi-mode food/terrain tuning is applied inside AntColony.__init__ (before
         # the first terrain is generated); just report it here.
         if self.isPi:

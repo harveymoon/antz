@@ -2915,9 +2915,17 @@ class AntColony:
                 self.ReplenishFood(q, baseCluster)
             # print('food replenished')
 
-        # Curriculum supply guarantee: keep a reachable cluster near the nest
-        # (checked cheaply every 200 steps via the spatial index)
-        if self.totalSteps % 200 == 0:
+        # Curriculum supply guarantee: keep a reachable cluster near the nest -
+        # but ONLY while the ladder is below full difficulty. Once the colony
+        # has walked food out to the normal distance the welfare stops:
+        # placement reverts to pure random drops, far food accumulates
+        # untouched, and the pressure to venture out is real again. (The
+        # always-on version bred a sustaining loop, observed in the 2000x2000
+        # timelapse: loopers waited at the nest for the next guaranteed
+        # cluster, top food froze at 16 and brains shrank. If the colony
+        # genuinely collapses, the thermostat walks the ladder back down and
+        # the guarantee re-engages for the re-bootstrap only.)
+        if self.totalSteps % 200 == 0 and self.effectiveMinFoodDist() < self.minFoodHiveDist:
             self._ensureNearFood()
 
         # Curriculum thermostat: if nobody has delivered for 3000+ steps, step

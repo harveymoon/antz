@@ -21,6 +21,7 @@ import re
 import sys
 import glob
 import time
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -247,8 +248,11 @@ def build_cache(run_id, verbose=True):
         'log_size': log_size,
         'log_mtime': os.path.getmtime(log) if os.path.exists(log) else None,
     }
-    with open(cache_path(run_id), 'w', encoding='utf-8') as f:
+    # Atomic write: never leave a half-written cache for a reader to trip on
+    tmp = cache_path(run_id) + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(cache, f)
+    os.replace(tmp, cache_path(run_id))
     return cache
 
 
@@ -285,6 +289,24 @@ def index_all(verbose=True):
         except Exception as e:  # keep indexing the rest
             print(f'[index] {rid}: FAILED ({e})')
     return out
+
+
+def refresher_loop():
+    """Single background thread that keeps caches current. HTTP handlers only
+    ever read caches - they never parse - so the UI stays instant no matter
+    how much a live run's log has grown."""
+    while True:
+        try:
+            for rid in discover_runs():
+                c = load_cache(rid)
+                log = os.path.join(DEATHS, f'{rid}.jsonl')
+                grown = (os.path.exists(log)
+                         and (c is None or os.path.getsize(log) > c['state']['bytes_parsed']))
+                if c is None or grown:
+                    build_cache(rid, verbose=False)
+        except Exception as e:
+            print(f'[refresh] error: {e}')
+        time.sleep(10)
 
 
 # ---------------------------------------------------------------- http server
@@ -348,10 +370,8 @@ class Handler(BaseHTTPRequestHandler):
                 runs = []
                 for rid in discover_runs():
                     c = load_cache(rid)
-                    log = os.path.join(DEATHS, f'{rid}.jsonl')
-                    if c is None or (os.path.exists(log)
-                                     and os.path.getsize(log) > c['state']['bytes_parsed']):
-                        c = build_cache(rid, verbose=False)
+                    if c is None:
+                        continue  # background refresher will index it shortly
                     s = run_summary(c)
                     # Hide data-less ghosts (old report-only run IDs)
                     if s['deaths'] or s['video'] or s['frames'] or s['reports'] >= 2:
@@ -360,14 +380,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, runs)
             m = re.match(r'^/api/run/([A-Za-z0-9_-]+)$', path)
             if m:
-                rid = m.group(1)
-                c = load_cache(rid)
-                log = os.path.join(DEATHS, f'{rid}.jsonl')
-                if c is None or (os.path.exists(log)
-                                 and os.path.getsize(log) > c['state']['bytes_parsed']):
-                    c = build_cache(rid, verbose=False)
+                c = load_cache(m.group(1))
                 if c is None:
-                    return self._send(404, {'error': 'no such run'})
+                    return self._send(404, {'error': 'indexing - retry shortly'})
                 return self._send(200, c)
             m = re.match(r'^/video/([A-Za-z0-9_-]+)$', path)
             if m:
@@ -544,13 +559,16 @@ def main():
     port = 8008
     if '--port' in sys.argv:
         port = int(sys.argv[sys.argv.index('--port') + 1])
-    print('[index] updating caches...')
-    index_all()
     if '--index' in sys.argv:
+        print('[index] updating caches...')
+        index_all()
         print('[index] done.')
         return
+    # Serve immediately from existing caches; one background thread keeps
+    # them current (initial catch-up included) so requests never parse.
+    threading.Thread(target=refresher_loop, daemon=True).start()
     srv = ThreadingHTTPServer(('127.0.0.1', port), Handler)
-    print(f'Antz history viewer: http://localhost:{port}')
+    print(f'Antz history viewer: http://localhost:{port} (background indexer running)')
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

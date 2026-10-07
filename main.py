@@ -80,13 +80,14 @@ class Ant:
         self.fitness = 0
         self.fitness_sources = {}  # per-source breakdown for post-hoc analysis
         self.birthStep = colony.totalSteps
-        self.life_events = []  # list of [step, kind] entries: kind in {"pickup", "deliver"}
+        self.life_events = []  # list of [step, kind, dist] entries: kind in {"pickup", "deliver"},
+                               # dist = food's distance from nest in tiles (older logs lack it)
         self.direction = 0
         self.pDirection = 0
         self.x = 0
         self.y = 0
         # self.energy = 100
-        self.life = 200
+        self.life = colony.baseLife
         self.FoodConsumed = 0
         self.blockedFront = False
         self.ClossestFood = [-1,-1]
@@ -1039,6 +1040,18 @@ class AntColony:
         # spawning right on top of the nest. Pi mode lowers this (smaller screen)
         # so food can be placed closer - see the Pi setup in Game.__init__.
         self.minFoodHiveDist = 25
+
+        # Life budget scales with world size. Base life (200) and the cap
+        # (500) were tuned on the 125-tile world; on a 250-tile world a
+        # newborn's first-food search reached only ~50 tiles (p99) while the
+        # far field sat 100-200 tiles out, so it could never be discovered.
+        # Linear in world dimension, clamped to [1, 3]: 125-tile worlds and
+        # the Pi are unchanged; 250 gets 400 / 1000. Food refills (+250
+        # pickup, +150 deliver) deliberately do NOT scale - scaling those is
+        # how you recreate the immortal-herd freeze seen on the Pi.
+        self.lifeScale = max(1.0, min(3.0, min(self.width, self.height) / 125.0))
+        self.baseLife = 200 * self.lifeScale
+        self.lifeCap = 500 * self.lifeScale
 
         # Bootstrap curriculum, PER EPOCH: until some ant has completed
         # bootstrapFoodTarget pickups since the current world began, food may
@@ -2452,19 +2465,26 @@ class AntColony:
                     # === TRIP COMPLETION REWARD ===
                     # Base reward for completing the round trip. This is the winning
                     # strategy and must clearly out-pay any per-step trail bonus.
-                    ant.life_events.append([self.totalSteps, "deliver"])
                     ant.add_fitness(500, "deliver_base")
 
-                    # Bonus based on how far the food was from hive (harder = more reward)
+                    # Bonus based on how far the food was from hive. Superlinear:
+                    # 5/tile + 0.15/tile^2. With a purely linear bonus, two short
+                    # trips always out-earned one long trip in the same time, so
+                    # foraging never pushed outward while any near food existed.
+                    # Per unit of trip time this curve now favours farther food
+                    # (30 tiles: +285, 60: +840, 100: +2000), while curriculum-
+                    # range trips (~7 tiles) are nearly unchanged.
+                    pickup_distance = 0.0
                     if ant.foodPickupPos is not None:
                         pickup_distance = math.hypot(
                             ant.foodPickupPos[0] - self.hivePos[0],
                             ant.foodPickupPos[1] - self.hivePos[1]
                         )
-                        # 5 points per tile of distance (rewards far foraging)
-                        distance_bonus = int(pickup_distance * 5)
+                        distance_bonus = int(pickup_distance * 5 + 0.15 * pickup_distance * pickup_distance)
                         ant.add_fitness(distance_bonus, "deliver_distance")
                         ant.foodPickupPos = None  # Reset for next trip
+                    # Event: [step, "deliver", pickup distance from nest in tiles]
+                    ant.life_events.append([self.totalSteps, "deliver", int(pickup_distance)])
             ant.pDirection = float(ant.direction)
             ant.RunBrain()
 
@@ -2539,10 +2559,13 @@ class AntColony:
                             ant.ClossestFood = [-1,-1]
                             ant.FoodConsumed += 1
                             ant.life += 250  # Keep ant alive longer to return food
-                            ant.life_events.append([self.totalSteps, "pickup"])
+                            # Event: [step, "pickup", distance from nest in tiles]
+                            ant.life_events.append([self.totalSteps, "pickup",
+                                                    int(math.hypot(ant.x - self.hivePos[0],
+                                                                   ant.y - self.hivePos[1]))])
                             ant.add_fitness(50, "pickup")
-                            if ant.life > 500:
-                                ant.life = 500
+                            if ant.life > self.lifeCap:
+                                ant.life = self.lifeCap
 
                             ant.carryingFood = True
                             # Record pickup position for navigation fitness
@@ -2915,17 +2938,17 @@ class AntColony:
                 self.ReplenishFood(q, baseCluster)
             # print('food replenished')
 
-        # Curriculum supply guarantee: keep a reachable cluster near the nest -
-        # but ONLY while the ladder is below full difficulty. Once the colony
-        # has walked food out to the normal distance the welfare stops:
-        # placement reverts to pure random drops, far food accumulates
-        # untouched, and the pressure to venture out is real again. (The
-        # always-on version bred a sustaining loop, observed in the 2000x2000
-        # timelapse: loopers waited at the nest for the next guaranteed
-        # cluster, top food froze at 16 and brains shrank. If the colony
-        # genuinely collapses, the thermostat walks the ladder back down and
-        # the guarantee re-engages for the re-bootstrap only.)
-        if self.totalSteps % 200 == 0 and self.effectiveMinFoodDist() < self.minFoodHiveDist:
+        # Curriculum supply guarantee: keep a reachable cluster near the nest
+        # ONLY during the bootstrap (before any ant has gathered
+        # bootstrapFoodTarget food this epoch). Once the colony forages at all,
+        # placement is pure random drops and the ladder only sets the minimum
+        # distance. History: always-on bred a nest-welfare loop (top food froze,
+        # brains shrank); gating at full difficulty still trapped run ea9c318d
+        # for 620k steps - with drops on every rung, no single ant ever
+        # reached the 13-food graduation mark, so the drops never stopped. If
+        # the colony collapses, the thermostat walks epochTopFood back below
+        # the target and the guarantee re-engages for the re-bootstrap only.
+        if self.totalSteps % 200 == 0 and self.epochTopFood < self.bootstrapFoodTarget:
             self._ensureNearFood()
 
         # Curriculum thermostat: if nobody has delivered for 3000+ steps, step

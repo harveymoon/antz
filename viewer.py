@@ -54,6 +54,11 @@ def _num_after(line, key, cast=int):
 SRC_KEYS = ('"pickup":', '"deliver_base":', '"deliver_distance":',
             '"death_nav":', '"death_exploration":', '"trail_step":')
 
+# Events are [step, "pickup"] in old logs and [step, "pickup", dist] in new ones
+PICK_DIST = re.compile(r'"pickup", (\d+)\]')
+DELIV_DIST = re.compile(r'"deliver", (\d+)\]')
+NBIN = 10  # deaths, pickups, delivers, lifeSum, fitSum, pkDistSum, pkDistN, dvDistSum, dvDistN, dvDistMax
+
 
 def parse_log_lines(fh, state):
     """Stream death-log lines into the aggregate state dict."""
@@ -70,8 +75,10 @@ def parse_log_lines(fh, state):
         lifespan = _num_after(line, '"lifespan": ') or 0
         fitness = _num_after(line, '"fitness_final": ', float) or 0.0
         food = _num_after(line, '"food_consumed": ') or 0
-        pk = line.count('"pickup"]')
-        dv = line.count('"deliver"]')
+        pdists = [int(x) for x in PICK_DIST.findall(line)]
+        ddists = [int(x) for x in DELIV_DIST.findall(line)]
+        pk = line.count('"pickup"]') + len(pdists)
+        dv = line.count('"deliver"]') + len(ddists)
         # ant type: '"antID": [123, "M", -1]'
         atype = '?'
         i = line.find('"antID": [')
@@ -83,12 +90,22 @@ def parse_log_lines(fh, state):
         b = step // BIN
         row = bins.get(b)
         if row is None:
-            row = bins[b] = [0, 0, 0, 0, 0.0]  # deaths, pickups, delivers, lifeSum, fitSum
+            row = bins[b] = [0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0]
+        elif len(row) < NBIN:
+            row.extend([0] * (NBIN - len(row)))  # cache from before distance logging
         row[0] += 1
         row[1] += pk
         row[2] += dv
         row[3] += lifespan
         row[4] += fitness
+        if pdists:
+            row[5] += sum(pdists)
+            row[6] += len(pdists)
+        if ddists:
+            row[7] += sum(ddists)
+            row[8] += len(ddists)
+            if max(ddists) > row[9]:
+                row[9] = max(ddists)
         t = bytype.get(atype)
         if t is None:
             t = bytype[atype] = [0, 0]
@@ -468,11 +485,13 @@ async function select(id) {
 
 function series() {
   const bins = cache.state.bins, keys = Object.keys(bins).map(Number).sort((a,b)=>a-b);
-  const s = { step:[], deaths:[], pickups:[], delivers:[], life:[], fit:[] };
+  const s = { step:[], deaths:[], pickups:[], delivers:[], life:[], fit:[],
+              dStep:[], dAvg:[], dMax:[] };
   for (const k of keys) {
-    const [d,p,v,ls,fs] = bins[k];
+    const [d,p,v,ls,fs,,,dds=0,ddn=0,ddm=0] = bins[k];
     s.step.push(k*1000); s.deaths.push(d); s.pickups.push(p); s.delivers.push(v);
     s.life.push(d ? ls/d : 0); s.fit.push(d ? fs/d : 0);
+    if (ddn) { s.dStep.push(k*1000); s.dAvg.push(dds/ddn); s.dMax.push(ddm); }
   }
   return s;
 }
@@ -518,6 +537,8 @@ function render(cursorStep) {
       <canvas class="chart" id="c2"></canvas>
       <canvas class="chart" id="c3"></canvas>
       <canvas class="chart" id="c4"></canvas>
+      <canvas class="chart" id="c5" style="display:none"></canvas>
+      <canvas class="chart" id="c6" style="display:none"></canvas>
       <h2>Run manifest</h2><div id="manifest">${Object.keys(man).length ? JSON.stringify(man, null, 1) : 'none (pre-manifest run)'}</div>`;
     const vid0 = $('#vid');
     if (vid0) vid0.onloadedmetadata = () => {
@@ -543,6 +564,11 @@ function render(cursorStep) {
       drawChart($('#c4'), reps.map(r=>r.step), reps.map(r=>r.fitMax||0), '#c9b3ff', 'Board max fitness (reports)', cache.resets, cur);
     else
       drawChart($('#c4'), s.step, s.deaths, '#ff9d6e', 'Deaths / 1k steps', cache.resets, cur);
+    if (s.dStep.length > 1) {
+      $('#c5').style.display = 'block'; $('#c6').style.display = 'block';
+      drawChart($('#c5'), s.dStep, s.dAvg, '#ff7ad9', 'Avg delivered-food distance from nest (tiles)', cache.resets, cur);
+      drawChart($('#c6'), s.dStep, s.dMax, '#ffb27a', 'Farthest delivery per 1k steps (tiles)', cache.resets, cur);
+    }
   }
 }
 

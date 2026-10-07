@@ -208,7 +208,7 @@ Every ant death appends one JSON line to `dataSave/deaths/{runID}.jsonl`. Each l
 - `food_consumed`, `farthest`, `carrying_at_death`
 - `fitness_final` and the **`fitness_breakdown`** — fitness contribution per source: `pickup`, `deliver_base`, `deliver_distance`, `death_nav`, `death_exploration` (`trail_step` appears in logs from older runs; trail-following now pays in reduced life drain instead of fitness)
 - `brain_size`, `brain_hash`, `color` (RGB)
-- `events` — list of `[step, "pickup"]` / `[step, "deliver"]` entries
+- `events` — list of `[step, "pickup", dist]` / `[step, "deliver", dist]` entries, where `dist` is the food's distance from the nest in tiles (logs from before 2026-10-06 have no `dist`)
 
 This lets you answer the questions you actually care about — *what % of ants delivered food? what reward source dominates the winners?* — without staring at the simulation for days.
 
